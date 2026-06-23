@@ -12,6 +12,8 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.example.blogger.entity.ArticleBlock;
+
 @Service
 public class WritingStyleService {
 
@@ -135,5 +137,43 @@ public class WritingStyleService {
             result = pattern.matcher(result).replaceAll(style);
         }
         return result;
+    }
+
+    /**
+     * 对 ArticleBlock 列表逐个应用写作风格替换。
+     * title 和 content 都会处理；处理失败时保留原始内容。
+     */
+    public List<ArticleBlock> applyStyle(List<ArticleBlock> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return blocks;
+        }
+        List<ArticleBlock> result = new ArrayList<>();
+        for (ArticleBlock block : blocks) {
+            ArticleBlock copy = copyBlock(block);
+            try {
+                if (copy.getTitle() != null && !copy.getTitle().isEmpty()) {
+                    copy.setTitle(applyStyle(copy.getTitle()));
+                }
+                if (copy.getContent() != null && !copy.getContent().isEmpty()) {
+                    copy.setContent(applyStyle(copy.getContent()));
+                }
+            } catch (Exception e) {
+                log.warn("[WritingStyleService] 处理 block 失败，保留原始内容: {}", e.getMessage());
+            }
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private ArticleBlock copyBlock(ArticleBlock block) {
+        ArticleBlock copy = new ArticleBlock();
+        copy.setType(block.getType());
+        copy.setTitle(block.getTitle());
+        copy.setMarker(block.getMarker());
+        copy.setMarkerText(block.getMarkerText());
+        copy.setContent(block.getContent());
+        copy.setStyleHint(block.getStyleHint());
+        copy.setRenderMeta(block.getRenderMeta() != null ? new java.util.HashMap<>(block.getRenderMeta()) : null);
+        return copy;
     }
 }
