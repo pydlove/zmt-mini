@@ -138,14 +138,17 @@ public class GenerationTaskExecutor {
             // 3.5 插入配图
             // 图片插入仍基于文本，先渲染为文本，插入图片后再解析回 blocks
             String contentBeforeImage = articleRenderer.render(blocks);
-            contentBeforeImage = insertImage(task, contentBeforeImage);
-            blocks = insertImageBlock(blocks, contentBeforeImage);
+            ImageInsertResult imageResult = insertImage(task, contentBeforeImage);
+            if (imageResult.imageInserted) {
+                blocks = insertImageBlock(blocks, imageResult.content);
+            }
 
             // 6. 文章样式处理
             blocks = articleStyleProcessor.process(blocks);
 
             // 7. 渲染为最终文本
             String content = articleRenderer.render(blocks);
+            taskService.updateGeneratedContent(task.getId(), content);
 
             // 4. 生成 DOCX
             DocxResult docx = generateDocx(task, content);
@@ -197,7 +200,7 @@ public class GenerationTaskExecutor {
 
         String prompt = task.getPrompt();
         // 追加系统指令：禁止模型输出思考过程，避免内容被  标签包裹导致误删
-        if (prompt != null && !prompt.contains("  ") && !prompt.contains("thinking")) {
+        if (prompt != null && !prompt.contains("<think") && !prompt.contains("thinking")) {
             prompt += "\n\n【系统指令】"
                     + "请直接输出 JSON 数组，不要输出任何思考过程，不要复述用户要求，不要加任何前言或总结。"
                     + "输出必须是可以被标准 JSON 解析器解析的合法 JSON，不要包裹在 markdown 代码块中。"
@@ -264,8 +267,6 @@ public class GenerationTaskExecutor {
         List<ArticleBlock> blocks = articleJsonParser.parse(rawContent);
         log.info("[GenerationTaskExecutor] [任务{}] Step 2/6: JSON解析完成, 共{}个block", task.getId(), blocks.size());
 
-        // 将渲染后的文本存入 generated_content，保持现有字段兼容
-        taskService.updateGeneratedContent(task.getId(), articleRenderer.render(blocks));
         taskService.updateProgress(task.getId(), 2, "正文生成完成");
         log.info("[GenerationTaskExecutor] [任务{}] Step 2/6: 正文生成完成", task.getId());
         return blocks;
@@ -350,15 +351,15 @@ public class GenerationTaskExecutor {
      *
      * @param task    当前任务
      * @param content 阶段 3.6 风格化后的正文（文本形式）
-     * @return 插入图片后的正文
+     * @return 包含插入后正文及是否插入了图片的 {@link ImageInsertResult}
      */
-    private String insertImage(TitleGenerationTask task, String content) {
+    private ImageInsertResult insertImage(TitleGenerationTask task, String content) {
         log.info("[GenerationTaskExecutor] [任务{}] Step 3.5/6: 开始插入图片", task.getId());
         try {
             TitleLibrary titleLib = titleLibraryService.getById(task.getTitleLibraryId());
             if (titleLib == null || titleLib.getTrackId() == null || titleLib.getTrackId().isEmpty()) {
                 log.info("[GenerationTaskExecutor] [任务{}] Step 3.5/6: 标题库无赛道信息, 跳过图片插入", task.getId());
-                return content;
+                return new ImageInsertResult(content, false);
             }
 
             com.example.blogger.entity.ImageLibrary image = null;
@@ -398,14 +399,14 @@ public class GenerationTaskExecutor {
             }
 
             if (image != null) {
-                content = insertImageIntoContent(content, image);
+                String inserted = insertImageIntoContent(content, image);
                 log.info("[GenerationTaskExecutor] [任务{}] Step 3.5/6: 图片已插入到正文", task.getId());
+                return new ImageInsertResult(inserted, true);
             }
         } catch (Exception e) {
             log.warn("[GenerationTaskExecutor] [任务{}] Step 3.5/6: 插入图片失败, 跳过: {}", task.getId(), e.getMessage());
         }
-        taskService.updateGeneratedContent(task.getId(), content);
-        return content;
+        return new ImageInsertResult(content, false);
     }
 
     /**
@@ -422,11 +423,6 @@ public class GenerationTaskExecutor {
         if (blocks == null || blocks.isEmpty()) {
             return blocks;
         }
-        // 如果 insertImage 没有插入图片，直接返回原 blocks
-        String original = articleRenderer.render(blocks);
-        if (original.equals(contentWithImage)) {
-            return blocks;
-        }
         // 有图片插入，简单策略：把文本重新解析为 blocks
         return parseBlocksFromRenderedText(contentWithImage);
     }
@@ -434,12 +430,26 @@ public class GenerationTaskExecutor {
     private List<ArticleBlock> parseBlocksFromRenderedText(String text) {
         List<ArticleBlock> result = new ArrayList<>();
         String[] paragraphs = text.split("\\n\\n+");
-        for (String para : paragraphs) {
-            String trimmed = para.trim();
+        for (int i = 0; i < paragraphs.length; i++) {
+            String trimmed = paragraphs[i].trim();
             if (trimmed.isEmpty()) continue;
             if (trimmed.startsWith("<h3>") && trimmed.endsWith("</h3>")) {
                 String title = trimmed.substring(4, trimmed.length() - 5);
-                result.add(ArticleBlock.section(title, null, null, "", "normal"));
+                StringBuilder contentBuilder = new StringBuilder();
+                int j = i + 1;
+                while (j < paragraphs.length) {
+                    String next = paragraphs[j].trim();
+                    if (next.isEmpty() || next.startsWith("<h3>") || next.startsWith("<img")) {
+                        break;
+                    }
+                    if (contentBuilder.length() > 0) {
+                        contentBuilder.append("\n\n");
+                    }
+                    contentBuilder.append(next);
+                    j++;
+                }
+                result.add(ArticleBlock.section(title, null, null, contentBuilder.toString(), "normal"));
+                i = j - 1;
             } else if (trimmed.startsWith("<img")) {
                 result.add(ArticleBlock.image(trimmed));
             } else {
@@ -826,6 +836,19 @@ public class GenerationTaskExecutor {
         DocxResult(String fileUrl, String fileName) {
             this.fileUrl = fileUrl;
             this.fileName = fileName;
+        }
+    }
+
+    /**
+     * 图片插入结果。
+     */
+    private static class ImageInsertResult {
+        final String content;
+        final boolean imageInserted;
+
+        ImageInsertResult(String content, boolean imageInserted) {
+            this.content = content;
+            this.imageInserted = imageInserted;
         }
     }
 }
