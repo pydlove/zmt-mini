@@ -33,7 +33,9 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -200,7 +202,7 @@ public class GenerationTaskExecutor {
 
         String prompt = task.getPrompt();
         // 追加系统指令：禁止模型输出思考过程，避免内容被  标签包裹导致误删
-        if (prompt != null && !prompt.contains("<think") && !prompt.contains("thinking")) {
+        if (prompt != null && !prompt.contains("\u3010\u7cfb\u7edf\u6307\u4ee4\u3011")) {
             prompt += "\n\n【系统指令】"
                     + "请直接输出 JSON 数组，不要输出任何思考过程，不要复述用户要求，不要加任何前言或总结。"
                     + "输出必须是可以被标准 JSON 解析器解析的合法 JSON，不要包裹在 markdown 代码块中。"
@@ -424,10 +426,10 @@ public class GenerationTaskExecutor {
             return blocks;
         }
         // 有图片插入，简单策略：把文本重新解析为 blocks
-        return parseBlocksFromRenderedText(contentWithImage);
+        return parseBlocksFromRenderedText(contentWithImage, blocks);
     }
 
-    private List<ArticleBlock> parseBlocksFromRenderedText(String text) {
+    private List<ArticleBlock> parseBlocksFromRenderedText(String text, List<ArticleBlock> originalBlocks) {
         List<ArticleBlock> result = new ArrayList<>();
         String[] paragraphs = text.split("\\n\\n+");
         for (int i = 0; i < paragraphs.length; i++) {
@@ -448,12 +450,37 @@ public class GenerationTaskExecutor {
                     contentBuilder.append(next);
                     j++;
                 }
-                result.add(ArticleBlock.section(title, null, null, contentBuilder.toString(), "normal"));
+                String styleHint = "normal";
+                Map<String, Object> renderMeta = new HashMap<>();
+                if (originalBlocks != null) {
+                    for (ArticleBlock ob : originalBlocks) {
+                        if (ArticleBlock.TYPE_SECTION.equals(ob.getType()) && title.equals(ob.getTitle())) {
+                            styleHint = ob.getStyleHint();
+                            renderMeta = ob.getRenderMeta() != null ? new HashMap<>(ob.getRenderMeta()) : new HashMap<>();
+                            break;
+                        }
+                    }
+                }
+                result.add(ArticleBlock.section(title, null, null, contentBuilder.toString(), styleHint));
+                result.get(result.size() - 1).setRenderMeta(renderMeta);
                 i = j - 1;
             } else if (trimmed.startsWith("<img")) {
                 result.add(ArticleBlock.image(trimmed));
             } else {
-                result.add(ArticleBlock.paragraph(trimmed, "normal"));
+                String styleHint = "normal";
+                Map<String, Object> renderMeta = new HashMap<>();
+                if (originalBlocks != null) {
+                    for (ArticleBlock ob : originalBlocks) {
+                        if (ArticleBlock.TYPE_PARAGRAPH.equals(ob.getType()) && trimmed.equals(ob.getContent())) {
+                            styleHint = ob.getStyleHint();
+                            renderMeta = ob.getRenderMeta() != null ? new HashMap<>(ob.getRenderMeta()) : new HashMap<>();
+                            break;
+                        }
+                    }
+                }
+                ArticleBlock p = ArticleBlock.paragraph(trimmed, styleHint);
+                p.setRenderMeta(renderMeta);
+                result.add(p);
             }
         }
         return result;

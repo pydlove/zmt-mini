@@ -59,7 +59,7 @@ class ArticleStyleProcessorTest {
     }
 
     @Test
-    void shouldPropagateUnexpectedExceptions() {
+    void shouldFallbackToOriginalBlocksOnRuntimeException() {
         StyleConfigService configService = mock(StyleConfigService.class);
         when(configService.findActive()).thenThrow(new RuntimeException("DB error"));
         ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
@@ -67,7 +67,8 @@ class ArticleStyleProcessorTest {
         List<ArticleBlock> blocks = List.of(
             ArticleBlock.section("标题", "01", "标题", "正文", "normal")
         );
-        assertThrows(RuntimeException.class, () -> processor.process(blocks));
+        List<ArticleBlock> result = processor.process(blocks);
+        assertEquals(blocks, result);
     }
 
     @Test

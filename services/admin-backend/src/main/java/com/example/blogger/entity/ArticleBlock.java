@@ -47,6 +47,14 @@ public class ArticleBlock {
         return block;
     }
 
+    public static ArticleBlock quote(String content, String styleHint) {
+        ArticleBlock block = new ArticleBlock();
+        block.setType(TYPE_QUOTE);
+        block.setContent(content);
+        block.setStyleHint(styleHint);
+        return block;
+    }
+
     // getters and setters
     public String getType() { return type; }
     public void setType(String type) { this.type = type; }

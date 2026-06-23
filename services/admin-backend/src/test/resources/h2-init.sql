@@ -1,8 +1,10 @@
+-- H2 bootstrap schema for Spring context tests.
+-- params is VARCHAR instead of MySQL JSON for H2 compatibility; production uses JSON type.
 CREATE TABLE IF NOT EXISTS tu_style_config (
     id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     strategy VARCHAR(16) NOT NULL,
-    params VARCHAR(500),
+    params VARCHAR(4000),
     is_active INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
