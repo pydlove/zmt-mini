@@ -13,7 +13,7 @@ import static org.mockito.Mockito.*;
 class ArticleStyleProcessorTest {
 
     @Test
-    void shouldUseDefaultStrategyWhenNoActiveConfig() {
+    void shouldPassThroughBlocksWhenServiceReturnsNull() {
         StyleConfigService configService = mock(StyleConfigService.class);
         when(configService.findActive()).thenReturn(null);
         ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
@@ -38,5 +38,48 @@ class ArticleStyleProcessorTest {
         );
         List<ArticleBlock> result = processor.process(blocks);
         assertEquals("01", result.get(0).getMarker());
+    }
+
+    @Test
+    void shouldReturnNullWhenBlocksIsNull() {
+        StyleConfigService configService = mock(StyleConfigService.class);
+        ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
+        List<ArticleBlock> result = processor.process(null);
+        assertNull(result);
+    }
+
+    @Test
+    void shouldReturnEmptyListWhenBlocksIsEmpty() {
+        StyleConfigService configService = mock(StyleConfigService.class);
+        ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
+        List<ArticleBlock> blocks = List.of();
+        List<ArticleBlock> result = processor.process(blocks);
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void shouldPropagateUnexpectedExceptions() {
+        StyleConfigService configService = mock(StyleConfigService.class);
+        when(configService.findActive()).thenThrow(new RuntimeException("DB error"));
+        ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
+
+        List<ArticleBlock> blocks = List.of(
+            ArticleBlock.section("标题", "01", "标题", "正文", "normal")
+        );
+        assertThrows(RuntimeException.class, () -> processor.process(blocks));
+    }
+
+    @Test
+    void shouldFallbackToOriginalBlocksOnIllegalArgumentException() {
+        StyleConfigService configService = mock(StyleConfigService.class);
+        when(configService.findActive()).thenThrow(new IllegalArgumentException("unknown strategy"));
+        ArticleStyleProcessor processor = new ArticleStyleProcessor(configService);
+
+        List<ArticleBlock> blocks = List.of(
+            ArticleBlock.section("标题", "01", "标题", "正文", "normal")
+        );
+        List<ArticleBlock> result = processor.process(blocks);
+        assertEquals(blocks, result);
     }
 }
