@@ -54,7 +54,7 @@ public class ArticleStyleStrategies {
         for (ArticleBlock block : result) {
             if (ArticleBlock.TYPE_SECTION.equals(block.getType())) {
                 String hint = block.getStyleHint();
-                String template = switch (hint) {
+                String template = switch (hint != null ? hint : "default") {
                     case "story" -> "story-card";
                     case "tip" -> "tip-card";
                     case "emphasis" -> "emphasis-card";
@@ -79,11 +79,17 @@ public class ArticleStyleStrategies {
     // E. 内容分级控制：写入策略元数据，不修改现有内容
     private static List<ArticleBlock> contentGrading(List<ArticleBlock> blocks) {
         List<ArticleBlock> result = copyBlocks(blocks);
+        int totalSections = 0;
+        for (ArticleBlock block : result) {
+            if (ArticleBlock.TYPE_SECTION.equals(block.getType())) {
+                totalSections++;
+            }
+        }
         int sectionIndex = 0;
         for (ArticleBlock block : result) {
             if (ArticleBlock.TYPE_SECTION.equals(block.getType())) {
                 sectionIndex++;
-                String grade = sectionIndex == 1 ? "intro-short" : (sectionIndex == result.size() ? "action" : "core-long");
+                String grade = sectionIndex == 1 ? "intro-short" : (sectionIndex == totalSections ? "action" : "core-long");
                 block.getRenderMeta().put("contentGrade", grade);
             }
         }

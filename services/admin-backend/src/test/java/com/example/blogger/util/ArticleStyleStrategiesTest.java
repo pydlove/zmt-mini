@@ -69,6 +69,30 @@ class ArticleStyleStrategiesTest {
     }
 
     @Test
+    void shouldApplyContentGradingWithNonSectionBlocks() {
+        List<ArticleBlock> blocks = List.of(
+            ArticleBlock.section("引言", "01", "引言", "正文1", "normal"),
+            ArticleBlock.paragraph("过渡段落", "normal"),
+            ArticleBlock.section("正文", "02", "正文", "正文2", "normal"),
+            ArticleBlock.paragraph("过渡段落", "normal"),
+            ArticleBlock.section("行动", "03", "行动", "正文3", "normal")
+        );
+        List<ArticleBlock> result = ArticleStyleStrategies.apply(blocks, "E");
+        assertEquals("intro-short", result.get(0).getRenderMeta().get("contentGrade"));
+        assertEquals("core-long", result.get(2).getRenderMeta().get("contentGrade"));
+        assertEquals("action", result.get(4).getRenderMeta().get("contentGrade"));
+    }
+
+    @Test
+    void shouldMapTemplatesWithNullHint() {
+        List<ArticleBlock> blocks = List.of(
+            ArticleBlock.section("默认", "01", "默认", "正文", null)
+        );
+        List<ArticleBlock> result = ArticleStyleStrategies.apply(blocks, "C");
+        assertEquals("knowledge-card", result.get(0).getRenderMeta().get("template"));
+    }
+
+    @Test
     void shouldGenerateToc() {
         List<ArticleBlock> blocks = List.of(
             ArticleBlock.section("标题A", "01", "标题A", "正文", "normal"),
