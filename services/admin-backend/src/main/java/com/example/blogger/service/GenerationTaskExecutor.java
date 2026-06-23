@@ -429,7 +429,7 @@ public class GenerationTaskExecutor {
         return parseBlocksFromRenderedText(contentWithImage, blocks);
     }
 
-    private List<ArticleBlock> parseBlocksFromRenderedText(String text, List<ArticleBlock> originalBlocks) {
+    private static List<ArticleBlock> parseBlocksFromRenderedText(String text, List<ArticleBlock> originalBlocks) {
         List<ArticleBlock> result = new ArrayList<>();
         String[] paragraphs = text.split("\\n\\n+");
         for (int i = 0; i < paragraphs.length; i++) {
@@ -450,18 +450,13 @@ public class GenerationTaskExecutor {
                     contentBuilder.append(next);
                     j++;
                 }
-                String styleHint = "normal";
-                Map<String, Object> renderMeta = new HashMap<>();
-                if (originalBlocks != null) {
-                    for (ArticleBlock ob : originalBlocks) {
-                        if (ArticleBlock.TYPE_SECTION.equals(ob.getType()) && title.equals(ob.getTitle())) {
-                            styleHint = ob.getStyleHint();
-                            renderMeta = ob.getRenderMeta() != null ? new HashMap<>(ob.getRenderMeta()) : new HashMap<>();
-                            break;
-                        }
-                    }
-                }
-                result.add(ArticleBlock.section(title, null, null, contentBuilder.toString(), styleHint));
+                ArticleBlock originalSection = findOriginalByTitle(originalBlocks, title);
+                String marker = originalSection != null ? originalSection.getMarker() : null;
+                String markerText = originalSection != null ? originalSection.getMarkerText() : null;
+                String styleHint = originalSection != null ? originalSection.getStyleHint() : "normal";
+                Map<String, Object> renderMeta = originalSection != null && originalSection.getRenderMeta() != null
+                        ? new HashMap<>(originalSection.getRenderMeta()) : new HashMap<>();
+                result.add(ArticleBlock.section(title, marker, markerText, contentBuilder.toString(), styleHint));
                 result.get(result.size() - 1).setRenderMeta(renderMeta);
                 i = j - 1;
             } else if (trimmed.startsWith("<img")) {
@@ -484,6 +479,19 @@ public class GenerationTaskExecutor {
             }
         }
         return result;
+    }
+
+    /**
+     * 在原始 block 列表中根据标题查找对应的 section block。
+     */
+    private static ArticleBlock findOriginalByTitle(List<ArticleBlock> original, String title) {
+        if (original == null) return null;
+        for (ArticleBlock block : original) {
+            if (ArticleBlock.TYPE_SECTION.equals(block.getType()) && block.getTitle() != null && block.getTitle().equals(title)) {
+                return block;
+            }
+        }
+        return null;
     }
 
     /**
