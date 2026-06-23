@@ -201,23 +201,34 @@ public class GenerationTaskExecutor {
         checkStopped(task.getId());
 
         String prompt = task.getPrompt();
-        // 追加系统指令：禁止模型输出思考过程，避免内容被  标签包裹导致误删
+        // 追加系统指令：禁止模型输出思考过程，避免内容被 think 标签包裹导致误删
         if (prompt != null && !prompt.contains("\u3010\u7cfb\u7edf\u6307\u4ee4\u3011")) {
-            prompt += "\n\n【系统指令】"
-                    + "请直接输出 JSON 数组，不要输出任何思考过程，不要复述用户要求，不要加任何前言或总结。"
-                    + "输出必须是可以被标准 JSON 解析器解析的合法 JSON，不要包裹在 markdown 代码块中。"
-                    + "禁止使用  、<thinking>、<thought>、<reasoning> 等标签包裹内容。"
-                    + "不要用英文分析任务，直接开始写中文文章。"
-                    + "正文中间请根据内容需要插入1-3个章节小标题（用于区分段落和观点），使用 <h3>标题内容</h3> 标签包裹，最多不超过3个。"
-                    + "文章最开头不要重复写总标题。"
-                    + "\n\nJSON 数组中每个元素代表文章的一个块，字段如下："
-                    + "type: 'section' 或 'paragraph';"
-                    + "title: 完整小标题字符串，如有序号请写成 '01 | 标题内容' 形式;"
-                    + "marker: 从 title 解析出的序号，如 '01'，没有则填 null;"
-                    + "markerText: 去掉 marker 后的标题文本，没有则填 null;"
-                    + "content: 该章节的正文内容，允许使用 <s></s> 标记需要着重加强的词句;"
-                    + "styleHint: 可选 'normal' / 'emphasis' / 'story' / 'tip';"
-                    + "\n\n示例：[{\"type\":\"section\",\"title\":\"01 | 示例标题\",\"marker\":\"01\",\"markerText\":\"示例标题\",\"content\":\"示例正文\",\"styleHint\":\"normal\"}]";
+            String provider = llmService.getSelectedModelType();
+            if ("minimax".equals(provider)) {
+                prompt += "\n\n【系统指令】"
+                        + "请直接输出 JSON 数组，不要任何前言、总结、markdown 代码块或思考过程。"
+                        + "文章最开头不要重复写总标题。"
+                        + "正文中间请根据内容需要插入1-3个章节小标题，标题写成 '01 | 标题内容' 形式。"
+                        + "\n\nJSON 数组字段：type('section'/'paragraph'), title, marker, markerText, content, styleHint('normal'/'emphasis'/'story'/'tip')。"
+                        + "content 中可用 <s></s> 标记重点词句。"
+                        + "\n\n示例：[{\"type\":\"section\",\"title\":\"01 | 示例标题\",\"marker\":\"01\",\"markerText\":\"示例标题\",\"content\":\"示例正文\",\"styleHint\":\"normal\"}]";
+            } else {
+                prompt += "\n\n【系统指令】"
+                        + "请直接输出 JSON 数组，不要输出任何思考过程，不要复述用户要求，不要加任何前言或总结。"
+                        + "输出必须是可以被标准 JSON 解析器解析的合法 JSON，不要包裹在 markdown 代码块中。"
+                        + "禁止使用 <think>、<thinking>、<thought>、<reasoning> 等标签包裹内容。"
+                        + "不要用英文分析任务，直接开始写中文文章。"
+                        + "正文中间请根据内容需要插入1-3个章节小标题（用于区分段落和观点），使用 <h3>标题内容</h3> 标签包裹，最多不超过3个。"
+                        + "文章最开头不要重复写总标题。"
+                        + "\n\nJSON 数组中每个元素代表文章的一个块，字段如下："
+                        + "type: 'section' 或 'paragraph';"
+                        + "title: 完整小标题字符串，如有序号请写成 '01 | 标题内容' 形式;"
+                        + "marker: 从 title 解析出的序号，如 '01'，没有则填 null;"
+                        + "markerText: 去掉 marker 后的标题文本，没有则填 null;"
+                        + "content: 该章节的正文内容，允许使用 <s></s> 标记需要着重加强的词句;"
+                        + "styleHint: 可选 'normal' / 'emphasis' / 'story' / 'tip';"
+                        + "\n\n示例：[{\"type\":\"section\",\"title\":\"01 | 示例标题\",\"marker\":\"01\",\"markerText\":\"示例标题\",\"content\":\"示例正文\",\"styleHint\":\"normal\"}]";
+            }
         }
 
         taskService.updateProgress(task.getId(), 1, "构建提示词完成，准备生成...");

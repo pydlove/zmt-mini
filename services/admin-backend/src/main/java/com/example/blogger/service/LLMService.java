@@ -124,9 +124,16 @@ public class LLMService {
             }
 
             StringBuilder content = new StringBuilder();
+            StringBuilder reasoning = new StringBuilder();
             int[] chunkCount = {0};
+            int[] reasoningCount = {0};
+            boolean[] firstLineLogged = {false};
             response.body().forEach(line -> {
                 if (line.isEmpty()) return;
+                if (!firstLineLogged[0]) {
+                    log.debug("[LLMService] Kimi 流式首行: {}", line);
+                    firstLineLogged[0] = true;
+                }
                 String data = null;
                 if (line.startsWith("data:")) {
                     data = line.substring(5).trim();
@@ -144,15 +151,27 @@ public class LLMService {
                             chunkCount[0]++;
                         }
                     }
-                    // reasoning_content 是模型的思维链，不应拼接到正式输出中
-                    if (chunkCount[0] > 0 && chunkCount[0] % 200 == 0) {
-                        log.info("[LLMService] Kimi 流式接收中... 已收 {} chunks, 当前长度 {}", chunkCount[0], content.length());
+                    if (delta.has("reasoning_content")) {
+                        String part = delta.get("reasoning_content").asText();
+                        if (part != null && !part.isEmpty()) {
+                            reasoning.append(part);
+                            reasoningCount[0]++;
+                        }
                     }
-                } catch (Exception ignored) {}
+                    if ((chunkCount[0] > 0 || reasoningCount[0] > 0) && (chunkCount[0] + reasoningCount[0]) % 200 == 0) {
+                        log.info("[LLMService] Kimi 流式接收中... contentChunks={}, reasoningChunks={}, contentLen={}, reasoningLen={}", chunkCount[0], reasoningCount[0], content.length(), reasoning.length());
+                    }
+                } catch (Exception e) {
+                    log.warn("[LLMService] Kimi 流式解析行失败: line={}, error={}", line, e.getMessage());
+                }
             });
 
             String result = content.toString();
-            log.info("[LLMService] Kimi 流式接收完成: 共 {} chunks, 总长度 {}, 预览: {}", chunkCount[0], result.length(), result.length() > 200 ? result.substring(0, 200) + "..." : result);
+            if (result.isEmpty() && reasoning.length() > 0) {
+                result = reasoning.toString();
+                log.info("[LLMService] Kimi 流式 content 为空，使用 reasoning_content 回退");
+            }
+            log.info("[LLMService] Kimi 流式接收完成: contentChunks={}, reasoningChunks={}, 总长度={}, 预览: {}", chunkCount[0], reasoningCount[0], result.length(), result.length() > 200 ? result.substring(0, 200) + "..." : result);
             return result;
         } catch (RuntimeException e) {
             throw e;
@@ -244,8 +263,13 @@ public class LLMService {
         String userPrompt = prompt;
         int sysIdx = prompt.indexOf("【系统指令】");
         if (sysIdx >= 0) {
-            systemPrompt = "你是一位资深中文自媒体写手，擅长撰写自然流畅、口语化的公众号文章。\n" + prompt.substring(sysIdx);
-            userPrompt = prompt.substring(0, sysIdx).trim();
+            // MiniMax 对长 system prompt 敏感，把 JSON 格式说明压缩后放到 system，原始写作要求保留在 user
+            String jsonInstruction = prompt.substring(sysIdx);
+            systemPrompt = "你是一位资深中文自媒体写手。请严格按以下要求输出：\n"
+                    + "1. 直接输出合法 JSON 数组，不要 markdown 代码块、前言、总结或思考过程。\n"
+                    + "2. 数组元素字段：type('section'/'paragraph'), title, marker, markerText, content, styleHint。\n"
+                    + "3. 示例：[{\"type\":\"section\",\"title\":\"01 | 标题\",\"marker\":\"01\",\"markerText\":\"标题\",\"content\":\"正文\",\"styleHint\":\"normal\"}]";
+            userPrompt = prompt.substring(0, sysIdx).trim() + "\n\n" + jsonInstruction;
         } else {
             systemPrompt += "请直接输出文章正文，不要输出思考过程，不要复述用户要求，不要加任何前言或总结。";
         }
@@ -258,6 +282,7 @@ public class LLMService {
         });
         body.put("stream", true);
         body.put("max_tokens", 4096);
+        body.put("temperature", 0.1);
         String bodyJson;
         try {
             bodyJson = objectMapper.writeValueAsString(body);
