@@ -214,6 +214,21 @@ async function handleCancel(record) {
   }
 }
 
+async function handleRerun(record) {
+  try {
+    generatePlatforms.value = record.platforms ? JSON.parse(record.platforms) : []
+  } catch (e) { generatePlatforms.value = [] }
+  try {
+    generateTrackIds.value = record.trackIds ? JSON.parse(record.trackIds) : []
+  } catch (e) { generateTrackIds.value = [] }
+  generateCount.value = record.countPerCombo || 3
+  generateInstruction.value = record.instruction || ''
+  selectedStyleId.value = record.styleTemplateId || ''
+  generateOutputPath.value = ''
+  await openGenerateModal()
+  message.info('已载入上次任务配置，请确认后点击生成')
+}
+
 async function handleStop(record) {
   try {
     await stopTitleGenerateTask(record.id)
@@ -239,6 +254,43 @@ const columns = [
     customRender: ({ record }) => {
       const tag = getStatusTag(record.status, record.progressStep)
       return h(Tag, { color: tag.color }, () => tag.text)
+    },
+  },
+  {
+    title: '平台-赛道',
+    key: 'platformTrack',
+    width: 200,
+    ellipsis: true,
+    customRender: ({ record }) => {
+      let platforms = []
+      let trackIds = []
+      try {
+        platforms = record.platforms ? JSON.parse(record.platforms) : []
+      } catch (e) { platforms = [] }
+      try {
+        trackIds = record.trackIds ? JSON.parse(record.trackIds) : []
+      } catch (e) { trackIds = [] }
+      if (platforms.length === 0 && trackIds.length === 0) {
+        return h('span', { style: 'color: #999;' }, '全部')
+      }
+      const items = []
+      // 笛卡尔积展示平台-赛道组合
+      if (trackIds.length === 0) {
+        platforms.forEach(p => items.push(p))
+      } else if (platforms.length === 0) {
+        trackIds.forEach(tid => {
+          const t = tracks.value.find(tr => tr.id === tid)
+          items.push(t ? t.name : tid)
+        })
+      } else {
+        platforms.forEach(p => {
+          trackIds.forEach(tid => {
+            const t = tracks.value.find(tr => tr.id === tid)
+            items.push(`${p}-${t ? t.name : tid}`)
+          })
+        })
+      }
+      return h('span', { title: items.join('、') }, items.join('、'))
     },
   },
   {
@@ -323,7 +375,8 @@ const columns = [
       if (record.status === 'completed' && record.resultFileUrl) {
         buttons.push(h('a', { href: record.resultFileUrl, target: '_blank', rel: 'noopener noreferrer', style: 'font-size: 13px;' }, () => '下载结果'))
       }
-      return h('div', { style: 'display: flex; justify-content: center; align-items: center; gap: 8px;' }, buttons)
+      buttons.push(h(Button, { type: 'link', size: 'small', onClick: () => handleRerun(record) }, () => '再跑一次'))
+      return h('div', { style: 'display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;' }, buttons)
     },
   },
 ]

@@ -20,16 +20,16 @@ CREATE TABLE tu_config (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE tu_style (
-    id VARCHAR(64) PRIMARY KEY,
+CREATE TABLE tu_export_template (
+    id VARCHAR(32) PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    scene VARCHAR(255) DEFAULT '',
+    type VARCHAR(50) DEFAULT 'docx',
+    config JSON NOT NULL,
     is_default TINYINT DEFAULT 0,
-    status VARCHAR(20) DEFAULT '已启用',
-    style_json LONGTEXT,
     is_deleted TINYINT DEFAULT 0 COMMENT '0=正常, 1=已删除',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_name (name)
 );
 
 CREATE TABLE tu_track (
@@ -108,7 +108,7 @@ CREATE TABLE ta_user (
     track_limit INT DEFAULT 0,
     platform_limit VARCHAR(100) DEFAULT '',
     avatar LONGTEXT,
-    template VARCHAR(50) DEFAULT '情感故事版',
+    template VARCHAR(50) DEFAULT '公众号标准模板',
     expire_date DATE DEFAULT '2026-12-31',
     last_login TIMESTAMP NULL DEFAULT NULL,
     remark VARCHAR(500) DEFAULT '',
@@ -152,12 +152,20 @@ INSERT INTO ta_role (id, name, permissions) VALUES
 ('role002', '内容管理员', '["track","blogger","post","guide","help"]'),
 ('role003', '运营管理员', '["user","dashboard","creation-review"]');
 
--- Seed data: styles
-INSERT INTO tu_style (id, name, scene, is_default, status, style_json) VALUES
-('style001', '精美商务版', '职场、商业、观点论述', 1, '已启用', '{"fontSize":"15px","lineHeight":"1.8","paragraphSpacing":"14px","fontFamily":"系统默认","titleColor":"#262626","textColor":"#4a4a4a","quoteBg":"#e6f7ff","h1Size":"18px","h2Size":"16px"}'),
-('style002', '情感故事版', '情感、故事、生活随笔', 0, '已启用', '{"fontSize":"15px","lineHeight":"1.8","paragraphSpacing":"14px","fontFamily":"系统默认","titleColor":"#722ed1","textColor":"#4a4a4a","quoteBg":"#f9f0ff","h1Size":"18px","h2Size":"16px"}'),
-('style003', '科技数码版', '科技评测、数码资讯', 0, '已启用', '{"fontSize":"15px","lineHeight":"1.8","paragraphSpacing":"14px","fontFamily":"系统默认","titleColor":"#08979c","textColor":"#333333","quoteBg":"#e6f7ff","h1Size":"18px","h2Size":"16px"}'),
-('style004', '健康养生版', '健康、养生、科普', 0, '已启用', '{"fontSize":"15px","lineHeight":"1.8","paragraphSpacing":"14px","fontFamily":"系统默认","titleColor":"#cf1322","textColor":"#434343","quoteBg":"#fff1f0","h1Size":"18px","h2Size":"16px"}');
+-- Seed data: export templates (12 presets, matching full-prototype-v20.html)
+INSERT INTO tu_export_template (id, name, type, config, is_default, is_deleted) VALUES
+('tpl_gh_std', '公众号标准模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":12,"headingFontSizePt":14,"bodyColor":"#262626","headingColor":"#1a1a1a","lineSpacing":432,"paragraphSpacingAfter":200,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#f6ffed","previewColor":"#07c160","description":"16px 正文 / 18px 小标题 / 绿色强调"}', 1, 0),
+('tpl_toutiao', '今日头条模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":13,"headingFontSizePt":14,"bodyColor":"#222222","headingColor":"#ff6600","lineSpacing":432,"paragraphSpacingAfter":200,"marginTop":1440,"marginBottom":1440,"marginLeft":1440,"marginRight":1440,"quoteBg":"#fff7e6","previewColor":"#ff6600","description":"17px 正文 / 橙色强调 / 资讯感标题"}', 0, 0),
+('tpl_xiaohongshu', '小红书图文模板', 'docx', '{"fontFamily":"PingFang SC","headingFontFamily":"PingFang SC","bodyFontSizePt":11,"headingFontSizePt":13,"bodyColor":"#333333","headingColor":"#ff2442","lineSpacing":444,"paragraphSpacingAfter":200,"marginTop":1440,"marginBottom":1440,"marginLeft":1440,"marginRight":1440,"quoteBg":"#fff0f3","previewColor":"#ff2442","description":"15px 正文 / 粉红标签 / 轻松活泼"}', 0, 0),
+('tpl_baijiahao', '百家号模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":12,"headingFontSizePt":14,"bodyColor":"#262626","headingColor":"#1677ff","lineSpacing":432,"paragraphSpacingAfter":180,"marginTop":1440,"marginBottom":1440,"marginLeft":1440,"marginRight":1440,"quoteBg":"#e6f4ff","previewColor":"#1677ff","description":"16px 正文 / 蓝色层级 / 信息密度高"}', 0, 0),
+('tpl_business', '简约商务模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":11,"headingFontSizePt":12,"bodyColor":"#262626","headingColor":"#1677ff","lineSpacing":420,"paragraphSpacingAfter":180,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#f0f5ff","previewColor":"#1677ff","description":"14px 正文 / 深蓝标题 / 清晰层级"}', 0, 0),
+('tpl_marketing', '营销转化模板', 'docx', '{"fontFamily":"PingFang SC","headingFontFamily":"PingFang SC","bodyFontSizePt":14,"headingFontSizePt":15,"bodyColor":"#262626","headingColor":"#cf1322","lineSpacing":432,"paragraphSpacingAfter":220,"marginTop":1440,"marginBottom":1440,"marginLeft":1440,"marginRight":1440,"quoteBg":"#fff2f0","previewColor":"#cf1322","description":"18px 正文 / 红色强调 / 引导行动"}', 0, 0),
+('tpl_story', '故事叙事模板', 'docx', '{"fontFamily":"Georgia","headingFontFamily":"Georgia","bodyFontSizePt":12,"headingFontSizePt":14,"bodyColor":"#262626","headingColor":"#5a3e2b","lineSpacing":444,"paragraphSpacingAfter":220,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#faf5ef","previewColor":"#8b5e34","description":"16px 正文 / 暖棕标题 / 沉浸阅读"}', 0, 0),
+('tpl_academic', '学术报告模板', 'docx', '{"fontFamily":"宋体","headingFontFamily":"黑体","bodyFontSizePt":12,"headingFontSizePt":13,"bodyColor":"#262626","headingColor":"#1a1a1a","lineSpacing":360,"paragraphSpacingAfter":160,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#fafafa","previewColor":"#333333","description":"宋体 / 1.5 倍行距 / 自动编号"}', 0, 0),
+('tpl_magazine', '杂志大字模板', 'docx', '{"fontFamily":"Georgia","headingFontFamily":"Georgia","bodyFontSizePt":12,"headingFontSizePt":14,"bodyColor":"#262626","headingColor":"#1a1a1a","lineSpacing":456,"paragraphSpacingAfter":240,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#fafafa","previewColor":"#1a1a1a","description":"大标题居中 / 衬线字体 / 留白呼吸"}', 0, 0),
+('tpl_card', '卡片分块模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":11,"headingFontSizePt":13,"bodyColor":"#262626","headingColor":"#07c160","lineSpacing":432,"paragraphSpacingAfter":200,"marginTop":1440,"marginBottom":1440,"marginLeft":1440,"marginRight":1440,"quoteBg":"#ffffff","previewColor":"#07c160","description":"分块卡片 / 阴影层级 / 信息聚焦"}', 0, 0),
+('tpl_checklist', '极简清单模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":11,"headingFontSizePt":13,"bodyColor":"#262626","headingColor":"#07c160","lineSpacing":432,"paragraphSpacingAfter":180,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#f6ffed","previewColor":"#07c160","description":"清单体 / 勾选符号 / 行动导向"}', 0, 0),
+('tpl_dark', '深色沉浸模板', 'docx', '{"fontFamily":"微软雅黑","headingFontFamily":"微软雅黑","bodyFontSizePt":12,"headingFontSizePt":14,"bodyColor":"#f0f0f0","headingColor":"#95de64","lineSpacing":432,"paragraphSpacingAfter":200,"marginTop":1440,"marginBottom":1440,"marginLeft":1800,"marginRight":1800,"quoteBg":"#333333","previewColor":"#07c160","description":"深色背景 / 高对比 / 沉浸阅读"}', 0, 0);
 
 -- Seed data: tracks
 INSERT INTO tu_track (id, name, icon, sort_order, preview_bloggers, intro, platforms, cover_json) VALUES

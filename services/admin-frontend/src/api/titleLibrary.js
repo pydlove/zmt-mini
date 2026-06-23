@@ -42,7 +42,13 @@ export function matchTodayTitles(date) {
 export function matchPreview(date) {
   const params = {}
   if (date) params.date = date
-  return request.get('/title-library/match-preview', { params })
+  return request.get('/title-library/match-preview', { params }).then(res => {
+    // 兼容新旧格式：旧格式直接返回数组，新格式返回 { matches, needGenerateTracks }
+    if (Array.isArray(res)) {
+      return { matches: res, needGenerateTracks: [] }
+    }
+    return res || { matches: [], needGenerateTracks: [] }
+  })
 }
 
 export function matchConfirm(date, matches) {
@@ -317,13 +323,14 @@ export function sendArticleEmail(titleId, email) {
 }
 
 // 生成文章贴图
-export function generateImagePost(titleId) {
-  return request.post(`/title-library/${titleId}/generate-image-post`)
+export function generateImagePost(titleId, style = '') {
+  const qs = style ? `?style=${encodeURIComponent(style)}` : ''
+  return request.post(`/title-library/${titleId}/generate-image-post${qs}`)
 }
 
 // 批量生成文章贴图
-export function batchGenerateImagePost(titleIds) {
-  return request.post('/title-library/batch-generate-image-post', { titleIds })
+export function batchGenerateImagePost(titleIds, style = '') {
+  return request.post('/title-library/batch-generate-image-post', { titleIds, style })
 }
 
 // 查询文章贴图列表

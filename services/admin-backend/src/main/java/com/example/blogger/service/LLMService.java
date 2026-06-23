@@ -29,6 +29,9 @@ public class LLMService {
     private static final int READ_TIMEOUT_MS = 3000000;
     private static final int MAX_RETRIES = 3;
     private static final int RETRY_DELAY_MS = 5000;
+    // 单次请求输出 token 上限：900-1200 字中文 + JSON 包装约需 5500-7000 tokens，
+    // 留 2-3 倍余量避免 LLM 在 max_tokens 处被截断
+    private static final int MAX_TOKENS = 16384;
 
     private final LLMConfigMapper llmConfigMapper;
     private final ObjectMapper objectMapper;
@@ -99,7 +102,7 @@ public class LLMService {
         } catch (Exception e) {
             escapedPrompt = "\"" + prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\"";
         }
-        final String bodyJson = "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":" + escapedPrompt + "}],\"stream\":true,\"max_tokens\":4096}";
+        final String bodyJson = "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":" + escapedPrompt + "}],\"stream\":true,\"max_tokens\":" + MAX_TOKENS + "}";
 
         java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create(KIMI_BASE_URL + "/v1/chat/completions"))
@@ -281,7 +284,7 @@ public class LLMService {
             Map.of("role", "user", "content", userPrompt)
         });
         body.put("stream", true);
-        body.put("max_tokens", 4096);
+        body.put("max_tokens", MAX_TOKENS);
         body.put("temperature", 0.1);
         String bodyJson;
         try {

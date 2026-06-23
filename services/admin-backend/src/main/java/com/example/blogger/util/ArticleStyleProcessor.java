@@ -21,14 +21,30 @@ public class ArticleStyleProcessor {
     }
 
     public List<ArticleBlock> process(List<ArticleBlock> blocks) {
+        String strategy = "A";
+        try {
+            StyleConfig config = styleConfigService.findActive();
+            if (config != null && config.getStrategy() != null) {
+                strategy = config.getStrategy().toUpperCase();
+            }
+        } catch (Exception ignored) {
+        }
+        return process(blocks, strategy);
+    }
+
+    /**
+     * 使用指定的策略处理 blocks（不读取数据库）。
+     * <p>
+     * 适用于：上游已读取 StyleConfig，希望避免重复 IO；或测试场景。
+     */
+    public List<ArticleBlock> process(List<ArticleBlock> blocks, String strategy) {
         if (blocks == null || blocks.isEmpty()) {
             return blocks;
         }
+        String s = strategy != null ? strategy.toUpperCase() : "A";
         try {
-            StyleConfig config = styleConfigService.findActive();
-            String strategy = config != null && config.getStrategy() != null ? config.getStrategy().toUpperCase() : "A";
-            log.info("[ArticleStyleProcessor] 应用样式策略: {}", strategy);
-            return ArticleStyleStrategies.apply(blocks, strategy);
+            log.info("[ArticleStyleProcessor] 应用样式策略: {}", s);
+            return ArticleStyleStrategies.apply(blocks, s);
         } catch (Exception e) {
             log.warn("[ArticleStyleProcessor] 样式处理失败，透传原始 block: {}", e.getMessage());
             return blocks;

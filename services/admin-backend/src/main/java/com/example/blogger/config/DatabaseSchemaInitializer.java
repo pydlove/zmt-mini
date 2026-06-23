@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 
@@ -198,6 +199,38 @@ public class DatabaseSchemaInitializer implements ApplicationRunner {
                 "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'" +
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='标题禁用词库'");
 
+            // 文章样式策略配置表（A-G 渲染策略）
+            ensureTable(conn, "tu_style_config",
+                "CREATE TABLE IF NOT EXISTS tu_style_config (" +
+                "  id VARCHAR(32) PRIMARY KEY COMMENT '配置ID'," +
+                "  name VARCHAR(100) NOT NULL COMMENT '策略名称'," +
+                "  strategy VARCHAR(10) NOT NULL COMMENT '策略: A=纯视觉美化 B=自动连续编号 C=模板映射 D=下游差异化 E=内容分级 F=自动生成目录 G=AI配图提示'," +
+                "  params JSON DEFAULT NULL COMMENT '策略参数（JSON）'," +
+                "  is_active TINYINT DEFAULT 0 COMMENT '是否当前激活: 0=否 1=是'," +
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'," +
+                "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'" +
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文章样式策略配置表'");
+
+            // 初始化默认激活策略：纯视觉美化（A）
+            ensureDefaultStyleConfig(conn);
+
+            // 文章导出模板表
+            ensureTable(conn, "tu_export_template",
+                "CREATE TABLE IF NOT EXISTS tu_export_template (" +
+                "  id VARCHAR(32) PRIMARY KEY COMMENT '模板ID'," +
+                "  name VARCHAR(100) NOT NULL COMMENT '模板名称'," +
+                "  type VARCHAR(50) DEFAULT 'docx' COMMENT '模板类型'," +
+                "  config JSON NOT NULL COMMENT '样式配置（JSON）'," +
+                "  is_default TINYINT DEFAULT 0 COMMENT '是否默认: 0=否 1=是'," +
+                "  is_deleted TINYINT DEFAULT 0 COMMENT '是否删除: 0=否 1=是'," +
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'," +
+                "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'," +
+                "  UNIQUE KEY uk_name (name)" +
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文章导出模板配置表'");
+
+            // 初始化内置导出模板
+            ensureDefaultExportTemplates(conn);
+
             // 初始化标题风格提示词模板
             initTitleStyleTemplates(conn);
         } catch (Exception e) {
@@ -386,6 +419,119 @@ public class DatabaseSchemaInitializer implements ApplicationRunner {
             log.info("[DatabaseSchemaInitializer] 已初始化 {} 种标题风格模板", templates.length);
         } catch (Exception e) {
             log.error("[DatabaseSchemaInitializer] 初始化标题风格模板失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 初始化默认激活的样式策略（策略 A 纯视觉美化）。
+     * <p>
+     * 仅当表中无任何激活记录时插入一条默认配置，避免每次启动都覆盖用户已配置的策略。
+     */
+    private void ensureDefaultStyleConfig(Connection conn) {
+        try {
+            boolean hasActive = false;
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM tu_style_config WHERE is_active = 1")) {
+                if (rs.next() && rs.getInt(1) > 0) {
+                    hasActive = true;
+                }
+            }
+            if (hasActive) {
+                log.debug("[DatabaseSchemaInitializer] 已存在激活的样式策略，跳过默认初始化");
+                return;
+            }
+            try (Statement stmt = conn.createStatement()) {
+                stmt.executeUpdate(
+                    "INSERT INTO tu_style_config(id, name, strategy, params, is_active, created_at, updated_at) " +
+                    "VALUES('DEFAULT', '默认纯视觉美化', 'A', NULL, 1, NOW(), NOW())"
+                );
+                log.info("[DatabaseSchemaInitializer] 已初始化默认样式策略: DEFAULT / 策略 A");
+            }
+        } catch (Exception e) {
+            log.error("[DatabaseSchemaInitializer] 初始化默认样式策略失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 同步内置导出模板。
+     * <p>
+     * 按 fixed ID 插入或更新 12 套预设模板，确保与原型 full-prototype-v20.html 保持一致。
+     * 用户自定义模板使用不同 ID，不会被覆盖。
+     */
+    private void ensureDefaultExportTemplates(Connection conn) {
+        try {
+            String[][] templates = {
+                {"tpl_gh_std", "公众号标准模板", "1", "#1a1a1a", "#07c160", "#f6ffed",
+                 "微软雅黑", "微软雅黑", "12", "14", "#262626", "432", "200", "1800", "1800",
+                 "16px 正文 / 18px 小标题 / 绿色强调"},
+                {"tpl_toutiao", "今日头条模板", "0", "#ff6600", "#ff6600", "#fff7e6",
+                 "微软雅黑", "微软雅黑", "13", "14", "#222222", "432", "200", "1440", "1440",
+                 "17px 正文 / 橙色强调 / 资讯感标题"},
+                {"tpl_xiaohongshu", "小红书图文模板", "0", "#ff2442", "#ff2442", "#fff0f3",
+                 "PingFang SC", "PingFang SC", "11", "13", "#333333", "444", "200", "1440", "1440",
+                 "15px 正文 / 粉红标签 / 轻松活泼"},
+                {"tpl_baijiahao", "百家号模板", "0", "#1677ff", "#1677ff", "#e6f4ff",
+                 "微软雅黑", "微软雅黑", "12", "14", "#262626", "432", "180", "1440", "1440",
+                 "16px 正文 / 蓝色层级 / 信息密度高"},
+                {"tpl_business", "简约商务模板", "0", "#1677ff", "#1677ff", "#f0f5ff",
+                 "微软雅黑", "微软雅黑", "11", "12", "#262626", "420", "180", "1800", "1800",
+                 "14px 正文 / 深蓝标题 / 清晰层级"},
+                {"tpl_marketing", "营销转化模板", "0", "#cf1322", "#cf1322", "#fff2f0",
+                 "PingFang SC", "PingFang SC", "14", "15", "#262626", "432", "220", "1440", "1440",
+                 "18px 正文 / 红色强调 / 引导行动"},
+                {"tpl_story", "故事叙事模板", "0", "#5a3e2b", "#8b5e34", "#faf5ef",
+                 "Georgia", "Georgia", "12", "14", "#262626", "444", "220", "1800", "1800",
+                 "16px 正文 / 暖棕标题 / 沉浸阅读"},
+                {"tpl_academic", "学术报告模板", "0", "#1a1a1a", "#333333", "#fafafa",
+                 "宋体", "黑体", "12", "13", "#262626", "360", "160", "1800", "1800",
+                 "宋体 / 1.5 倍行距 / 自动编号"},
+                {"tpl_magazine", "杂志大字模板", "0", "#1a1a1a", "#1a1a1a", "#fafafa",
+                 "Georgia", "Georgia", "12", "14", "#262626", "456", "240", "1800", "1800",
+                 "大标题居中 / 衬线字体 / 留白呼吸"},
+                {"tpl_card", "卡片分块模板", "0", "#07c160", "#07c160", "#ffffff",
+                 "微软雅黑", "微软雅黑", "11", "13", "#262626", "432", "200", "1440", "1440",
+                 "分块卡片 / 阴影层级 / 信息聚焦"},
+                {"tpl_checklist", "极简清单模板", "0", "#07c160", "#07c160", "#f6ffed",
+                 "微软雅黑", "微软雅黑", "11", "13", "#262626", "432", "180", "1800", "1800",
+                 "清单体 / 勾选符号 / 行动导向"},
+                {"tpl_dark", "深色沉浸模板", "0", "#95de64", "#07c160", "#333333",
+                 "微软雅黑", "微软雅黑", "12", "14", "#f0f0f0", "432", "200", "1800", "1800",
+                 "深色背景 / 高对比 / 沉浸阅读"}
+            };
+            String insertSql = "INSERT INTO tu_export_template(id, name, type, config, is_default, is_deleted, created_at, updated_at) " +
+                "VALUES(?, ?, 'docx', ?, ?, 0, NOW(), NOW()) " +
+                "ON DUPLICATE KEY UPDATE " +
+                "name = VALUES(name), type = VALUES(type), config = VALUES(config), " +
+                "is_default = VALUES(is_default), is_deleted = VALUES(is_deleted), updated_at = NOW()";
+            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+                for (String[] t : templates) {
+                    String config = "{" +
+                        "\"fontFamily\":\"" + t[6] + "\"," +
+                        "\"headingFontFamily\":\"" + t[7] + "\"," +
+                        "\"bodyFontSizePt\":" + t[8] + "," +
+                        "\"headingFontSizePt\":" + t[9] + "," +
+                        "\"bodyColor\":\"" + t[10] + "\"," +
+                        "\"headingColor\":\"" + t[3] + "\"," +
+                        "\"lineSpacing\":" + t[11] + "," +
+                        "\"paragraphSpacingAfter\":" + t[12] + "," +
+                        "\"marginTop\":1440," +
+                        "\"marginBottom\":1440," +
+                        "\"marginLeft\":" + t[13] + "," +
+                        "\"marginRight\":" + t[14] + "," +
+                        "\"quoteBg\":\"" + t[5] + "\"," +
+                        "\"previewColor\":\"" + t[4] + "\"," +
+                        "\"description\":\"" + t[15] + "\"" +
+                        "}";
+                    ps.setString(1, t[0]);
+                    ps.setString(2, t[1]);
+                    ps.setString(3, config);
+                    ps.setInt(4, Integer.parseInt(t[2]));
+                    ps.executeUpdate();
+                }
+                log.info("[DatabaseSchemaInitializer] 已同步 {} 套内置导出模板", templates.length);
+            }
+        } catch (Exception e) {
+            log.error("[DatabaseSchemaInitializer] 同步内置导出模板失败: {}", e.getMessage(), e);
         }
     }
 

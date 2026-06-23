@@ -6,14 +6,14 @@ import vueJsx from '@vitejs/plugin-vue-jsx'
 export default defineConfig({
   plugins: [vue(), vueJsx()],
   server: {
-    port: 5174,
+    port: 35174,
     proxy: {
       '/api': {
-        target: 'http://localhost:8082',
+        target: 'http://localhost:38082',
         changeOrigin: true,
       },
       '/uploads': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:38080',
         changeOrigin: true,
       },
     },

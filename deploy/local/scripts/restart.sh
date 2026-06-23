@@ -5,7 +5,7 @@
 
 set -e
 
-BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BASE_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 
 # Jasypt 加密密钥（生产环境务必修改）
 export JASYPT_ENCRYPTOR_PASSWORD=MySecretKey2024
@@ -64,10 +64,10 @@ echo ""
 
 # 1. 停止旧进程
 log_info "步骤 1/4: 停止旧进程..."
-kill_port 8080  "admin-backend"
-kill_port 8082  "user-backend"
-kill_port 5173  "admin-frontend"
-kill_port 5174  "user-frontend"
+kill_port 38080  "admin-backend"
+kill_port 38082  "user-backend"
+kill_port 35173  "admin-frontend"
+kill_port 35174  "user-frontend"
 sleep 1
 log_ok "旧进程已清理"
 echo ""

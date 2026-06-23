@@ -8,6 +8,8 @@ import { listTitles, saveTitle, deleteTitle, importTitles, matchTodayTitles, mat
 import { listAiFlavorRules } from '../api/aiFlavorRule.js'
 import { listTracks } from '../api/track.js'
 import { listUsers } from '../api/user.js'
+import { createTitleGenerateTask, listTitleGenerateTasks } from '../api/titleGenerate.js'
+import { listPromptTemplates } from '../api/promptTemplate.js'
 import request from '../api/request.js'
 import { renderAsync } from 'docx-preview'
 import { useDocxHighlight } from '../composables/useDocxHighlight.js'
@@ -944,6 +946,214 @@ const matchRowSelection = {
   },
 }
 
+// 日期选择前置弹框
+const matchDateModalOpen = ref(false)
+const matchDateForm = ref({ date: dayjs(localStorage.getItem('matchForm_date') || dayjs().format('YYYY-MM-DD')) })
+
+function openMatchDateModal() {
+  const saved = localStorage.getItem('matchForm_date')
+  matchDateForm.value.date = saved ? dayjs(saved) : dayjs()
+  matchDateModalOpen.value = true
+}
+
+function handleMatchDateConfirm() {
+  const dateStr = matchDateForm.value.date ? matchDateForm.value.date.format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD')
+  localStorage.setItem('matchForm_date', dateStr)
+  matchForm.value.date = matchDateForm.value.date
+  matchDateModalOpen.value = false
+  matchModalOpen.value = true
+  runMatchPreview()
+}
+
+// 无合适匹配提示弹框
+const noMatchPromptOpen = ref(false)
+const noMatchPromptTracks = ref([])
+
+function handleNoMatchConfirm() {
+  noMatchPromptOpen.value = false
+  openV2GenerateModal(noMatchPromptTracks.value)
+}
+
+// V2 生成弹框（从 TitleGenerateManage.vue 提取）
+const v2GenerateModalOpen = ref(false)
+const v2GenerateCount = ref(100)
+const v2GeneratePlatforms = ref([])
+const v2GenerateTrackIds = ref([])
+const v2GenerateInstruction = ref('')
+const v2Generating = ref(false)
+const v2InstructionMode = ref('manual')
+const v2PromptTemplates = ref([])
+const v2SelectedPromptId = ref('')
+const v2StyleTemplates = ref([])
+const v2SelectedStyleId = ref('')
+let v2GeneratePollTimer = null
+
+async function openV2GenerateModal(preFillTracks = []) {
+  v2GenerateModalOpen.value = true
+  v2GenerateCount.value = 100
+  v2InstructionMode.value = 'manual'
+  v2SelectedPromptId.value = ''
+  v2GenerateInstruction.value = ''
+  v2SelectedStyleId.value = ''
+
+  // 加载提示词模板
+  try {
+    const res = await listPromptTemplates({ type: 'generate_title' })
+    v2PromptTemplates.value = (res || []).filter(p => p.type === 'generate_title')
+  } catch (e) {
+    v2PromptTemplates.value = []
+  }
+  try {
+    const res2 = await listPromptTemplates({ type: 'title_style' })
+    v2StyleTemplates.value = (res2 || []).filter(p => p.type === 'title_style')
+  } catch (e) {
+    v2StyleTemplates.value = []
+  }
+
+  // 默认选中第一个风格和第一个方向
+  if (v2StyleTemplates.value.length > 0) {
+    v2SelectedStyleId.value = v2StyleTemplates.value[0].id
+  }
+  if (v2PromptTemplates.value.length > 0) {
+    const firstTpl = v2PromptTemplates.value[0]
+    v2SelectedPromptId.value = firstTpl.id
+    v2GenerateInstruction.value = firstTpl.content
+    v2InstructionMode.value = 'template'
+  }
+
+  // 预填赛道和平台
+  v2GenerateTrackIds.value = []
+  v2GeneratePlatforms.value = []
+  if (preFillTracks && preFillTracks.length > 0) {
+    for (const t of preFillTracks) {
+      if (t.trackId) v2GenerateTrackIds.value.push(t.trackId)
+      if (t.platform && !v2GeneratePlatforms.value.includes(t.platform)) {
+        v2GeneratePlatforms.value.push(t.platform)
+      }
+    }
+  }
+}
+
+function onV2PromptChange(val) {
+  const tpl = v2PromptTemplates.value.find(p => p.id === val)
+  if (tpl) {
+    v2GenerateInstruction.value = tpl.content
+  } else {
+    v2GenerateInstruction.value = ''
+  }
+}
+
+function onV2PlatformChange() {
+  if (!v2GeneratePlatforms.value || v2GeneratePlatforms.value.length === 0) {
+    return
+  }
+  v2GenerateTrackIds.value = v2GenerateTrackIds.value.filter(trackId => {
+    const track = tracks.value.find(t => t.id === trackId)
+    if (!track || !track.platforms) return false
+    const trackPlatforms = track.platforms.split(',')
+    return v2GeneratePlatforms.value.some(p => trackPlatforms.includes(p))
+  })
+}
+
+const filteredTracksForV2Generate = computed(() => {
+  if (!v2GeneratePlatforms.value || v2GeneratePlatforms.value.length === 0) {
+    return tracks.value
+  }
+  return tracks.value.filter(t => {
+    if (!t.platforms) return false
+    const trackPlatforms = t.platforms.split(',')
+    return v2GeneratePlatforms.value.some(p => trackPlatforms.includes(p))
+  })
+})
+
+async function handleV2Generate() {
+  if (!v2GenerateCount.value || v2GenerateCount.value < 1) {
+    message.warning('请输入有效的生成数量')
+    return
+  }
+  v2Generating.value = true
+  try {
+    const result = await createTitleGenerateTask({
+      countPerCombo: parseInt(v2GenerateCount.value),
+      outputPath: '',
+      platforms: v2GeneratePlatforms.value,
+      trackIds: v2GenerateTrackIds.value,
+      instruction: v2GenerateInstruction.value.trim(),
+      styleTemplateId: v2SelectedStyleId.value || undefined,
+    })
+    v2GenerateModalOpen.value = false
+    message.success(result.message || '生成任务已创建')
+    // 开始轮询任务状态
+    startV2GeneratePoll()
+  } catch (e) {
+    message.error('提交失败: ' + (e?.response?.data?.msg || e?.message || '未知错误'))
+  } finally {
+    v2Generating.value = false
+  }
+}
+
+function startV2GeneratePoll() {
+  stopV2GeneratePoll()
+  v2GeneratePollTimer = setInterval(async () => {
+    try {
+      const res = await listTitleGenerateTasks({ status: '' })
+      const taskList = res?.list || []
+      const latestTask = taskList[0]
+      if (!latestTask) return
+      if (latestTask.status === 'completed') {
+        stopV2GeneratePoll()
+        message.success('标题生成完成，正在重新匹配...')
+        await runMatchPreview()
+        // 如果重新匹配后仍无数据，再次提示
+        if (matchPreviewData.value.length === 0 && noMatchPromptTracks.value.length > 0) {
+          noMatchPromptOpen.value = true
+        }
+      } else if (latestTask.status === 'failed') {
+        stopV2GeneratePoll()
+        message.error('标题生成失败: ' + (latestTask.progressMessage || '未知错误'))
+      }
+    } catch (e) {
+      console.error('poll error:', e)
+    }
+  }, 5000)
+}
+
+function stopV2GeneratePoll() {
+  if (v2GeneratePollTimer) {
+    clearInterval(v2GeneratePollTimer)
+    v2GeneratePollTimer = null
+  }
+}
+
+// 批量通过选中
+async function handleBatchApproveSelected() {
+  if (matchSelectedKeys.value.length === 0) {
+    message.warning('请先选择要通过的项')
+    return
+  }
+  const selectedRecords = matchPreviewData.value.filter(m => matchSelectedKeys.value.includes(m.titleId))
+  if (selectedRecords.length === 0) return
+  matching.value = true
+  try {
+    const dateStr = matchForm.value.date ? matchForm.value.date.format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD')
+    const matches = selectedRecords.map(m => ({
+      titleId: m.titleId,
+      userId: m.userId,
+      editedTitle: m.editedTitle,
+    }))
+    const result = await matchConfirm(dateStr, matches)
+    const saved = result.saved || 0
+    message.success(`批量通过成功：${saved} 条已入库`)
+    matchPreviewData.value = matchPreviewData.value.filter(m => !matchSelectedKeys.value.includes(m.titleId))
+    matchSelectedKeys.value = []
+    loadData()
+  } catch (e) {
+    message.error(e?.response?.data?.msg || e?.message || '批量通过失败')
+  } finally {
+    matching.value = false
+  }
+}
+
 // 用户历史弹窗
 const historyModalOpen = ref(false)
 const historyLoading = ref(false)
@@ -1022,16 +1232,23 @@ async function runMatchPreview() {
   matchPreviewData.value = []
   matchPreviewLoading.value = true
   matchSelectedKeys.value = []
+  noMatchPromptTracks.value = []
   try {
     const dateStr = matchForm.value.date ? matchForm.value.date.format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD')
     const result = await matchPreview(dateStr)
-    matchPreviewData.value = result || []
+    matchPreviewData.value = result.matches || []
+    noMatchPromptTracks.value = result.needGenerateTracks || []
 
-    // 加载完后，获取每个匹配用户的最高相似度
+    // 加载同质化程度（相似度后端已计算并过滤）
     await loadMatchSimilarities()
 
     // 按用户名排序
     matchPreviewData.value.sort((a, b) => (a.username || '').localeCompare(b.username || ''))
+
+    // 如果匹配为空但有需要生成的赛道，提示用户
+    if (matchPreviewData.value.length === 0 && noMatchPromptTracks.value.length > 0) {
+      noMatchPromptOpen.value = true
+    }
   } catch (e) {
     message.error('加载匹配预览失败: ' + (e?.response?.data?.msg || e?.message || '未知错误'))
   } finally {
@@ -1039,7 +1256,7 @@ async function runMatchPreview() {
   }
 }
 
-// 为匹配预览的每条记录计算当前标题与用户历史绑定的最高相似度
+// 为匹配预览的每条记录补充同质化程度（相似度后端已返回）
 async function loadMatchSimilarities() {
   if (matchPreviewData.value.length === 0) return
 
@@ -1059,12 +1276,6 @@ async function loadMatchSimilarities() {
     Promise.all(userIds.map(userId => getUserHomogeneity(userId).catch(() => 0))),
   ])
 
-  // 建立 userId -> 历史列表的映射
-  const historyMap = new Map()
-  userIds.forEach((userId, idx) => {
-    historyMap.set(userId, userHistories[idx] || [])
-  })
-
   // 建立 userId -> 同质化程度的映射
   const homogeneityMap = new Map()
   userIds.forEach((userId, idx) => {
@@ -1072,28 +1283,14 @@ async function loadMatchSimilarities() {
     homogeneityMap.set(userId, typeof val === 'number' ? val : 0)
   })
 
-  // 为每条记录计算最高相似度和同质化程度
+  // 为每条记录补充同质化程度（maxSimilarity 后端已返回，不再覆盖）
   for (const item of matchPreviewData.value) {
-    const history = historyMap.get(item.userId) || []
-    const currentTitle = item.editedTitle || item.title || ''
-    let maxSim = 0
-    for (const h of history) {
-      const hTitle = h.titleName || ''
-      if (hTitle && currentTitle) {
-        const sim = Math.round(similarity(currentTitle, hTitle) * 100)
-        if (sim > maxSim) maxSim = sim
-      }
-    }
-    item.maxSimilarity = maxSim
     item.homogeneity = homogeneityMap.get(item.userId) || 0
   }
 }
 
 async function openMatchModal() {
-  const saved = localStorage.getItem('matchForm_date')
-  matchForm.value.date = saved ? dayjs(saved) : dayjs()
-  matchModalOpen.value = true
-  await runMatchPreview()
+  openMatchDateModal()
 }
 
 async function handleRematchOne(record) {
@@ -2742,10 +2939,17 @@ onMounted(() => {
       <DatePicker v-model:value="matchForm.date" placeholder="推荐日期" @change="() => { localStorage.setItem('matchForm_date', matchForm.date.format('YYYY-MM-DD')); runMatchPreview(); }" />
       <Button @click="runMatchPreview" :loading="matchPreviewLoading">刷新预览</Button>
       <Button type="primary" :loading="batchImagePostLoading" @click="handleBatchGenerateImagePost">批量生成贴图</Button>
+      <Button
+        type="primary"
+        ghost
+        :disabled="matchSelectedKeys.length === 0"
+        :loading="matching"
+        @click="handleBatchApproveSelected"
+      >批量通过选中</Button>
       <Button danger :loading="matchClearing" @click="handleClearAndMatch" style="margin-left: auto;">清理后重新匹配</Button>
     </div>
     <div style="color: #999; font-size: 12px; margin-bottom: 12px;">
-      以下为系统预匹配结果，请审核后确认。所有变更前可编辑标题或重新匹配用户。
+      以下为系统预匹配结果，请审核后确认。所有变更前可编辑标题或重新匹配用户。相似度≥20%的标题已被自动过滤。
     </div>
 
     <!-- 加载中 -->
@@ -2831,6 +3035,129 @@ onMounted(() => {
         共 <strong>{{ matchPreviewData.length }}</strong> 项待确认匹配
       </div>
     </div>
+  </Modal>
+
+  <!-- 日期选择前置弹框 -->
+  <Modal
+    v-model:open="matchDateModalOpen"
+    title="选择推荐日期"
+    :mask-closable="false"
+    @ok="handleMatchDateConfirm"
+  >
+    <div style="margin-top: 12px;">
+      <DatePicker v-model:value="matchDateForm.date" placeholder="选择推荐日期" style="width: 100%;" />
+    </div>
+  </Modal>
+
+  <!-- 无合适匹配提示弹框 -->
+  <Modal
+    v-model:open="noMatchPromptOpen"
+    title="没有合适的匹配标题"
+    :mask-closable="false"
+    @ok="handleNoMatchConfirm"
+    @cancel="noMatchPromptOpen = false"
+  >
+    <div style="margin-top: 12px; font-size: 14px; color: #595959; line-height: 1.8;">
+      <p>当前日期下，所有候选标题与历史标题的相似度均≥20%，已被自动过滤。</p>
+      <p v-if="noMatchPromptTracks.length > 0">
+        以下赛道没有低相似度标题，建议生成新标题：<br>
+        <Tag v-for="t in noMatchPromptTracks" :key="t.trackId" color="orange" style="margin-top: 8px;">{{ t.trackName }}</Tag>
+      </p>
+    </div>
+  </Modal>
+
+  <!-- V2 生成标题弹框 -->
+  <Modal
+    v-model:open="v2GenerateModalOpen"
+    title="生成标题（V2-大模型）"
+    :mask-closable="false"
+    :confirm-loading="v2Generating"
+    @ok="handleV2Generate"
+    :width="560"
+  >
+    <Form layout="vertical" style="margin-top: 12px;">
+      <div style="background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+        <div style="font-size: 13px; color: #096dd9; margin-bottom: 8px;">
+          <strong>生成说明</strong>
+        </div>
+        <div style="font-size: 12px; color: #096dd9; line-height: 1.8;">
+          1. 选择平台和赛道，不选则生成全部<br>
+          2. 数量指每个平台下每个赛道生成的标题数<br>
+          3. 系统会按平台分批调用大模型（kimi/minimax）生成<br>
+          4. 生成结果包含标题、平台、赛道名称和文章写作思路
+        </div>
+      </div>
+      <Form.Item label="选择平台">
+        <Select
+          show-search
+          v-model:value="v2GeneratePlatforms"
+          mode="multiple"
+          placeholder="不选则生成全部平台"
+          style="width: 100%;"
+          @change="onV2PlatformChange"
+        >
+          <Select.Option value="公众号">公众号</Select.Option>
+          <Select.Option value="今日头条">今日头条</Select.Option>
+          <Select.Option value="百家号">百家号</Select.Option>
+        </Select>
+      </Form.Item>
+      <Form.Item label="选择赛道">
+        <Select
+          show-search
+          v-model:value="v2GenerateTrackIds"
+          mode="multiple"
+          placeholder="不选则生成全部赛道"
+          style="width: 100%;"
+        >
+          <Select.Option v-for="t in filteredTracksForV2Generate" :key="t.id" :value="t.id" :label="t.name">{{ t.name }}</Select.Option>
+        </Select>
+      </Form.Item>
+      <Form.Item label="每个组合生成数量" required>
+        <Input v-model:value="v2GenerateCount" type="number" min="1" max="20" placeholder="例如：3" />
+      </Form.Item>
+      <Form.Item label="标题风格（可选）">
+        <Select
+          v-model:value="v2SelectedStyleId"
+          placeholder="不选则使用默认风格"
+          style="width: 100%;"
+          allowClear
+        >
+          <Select.Option v-for="s in v2StyleTemplates" :key="s.id" :value="s.id">{{ s.name }}</Select.Option>
+        </Select>
+        <div style="font-size: 12px; color: #999; margin-top: 4px;">选择后，AI 将严格按照该风格生成标题</div>
+      </Form.Item>
+      <Form.Item label="生成方向（可选）">
+        <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+          <label style="font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+            <input type="radio" v-model="v2InstructionMode" value="manual" />
+            手动输入
+          </label>
+          <label style="font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+            <input type="radio" v-model="v2InstructionMode" value="template" />
+            选择提示词模板
+          </label>
+        </div>
+        <div v-if="v2InstructionMode === 'template'">
+          <Select
+            v-model:value="v2SelectedPromptId"
+            placeholder="请选择提示词模板"
+            style="width: 100%;"
+            @change="onV2PromptChange"
+          >
+            <Select.Option v-for="p in v2PromptTemplates" :key="p.id" :value="p.id">{{ p.name }}</Select.Option>
+          </Select>
+        </div>
+        <Input.TextArea
+          v-model:value="v2GenerateInstruction"
+          placeholder="例如：更口语化、更具悬念、突出数字效果、适合抖音风格、偏新闻报道类..."
+          :rows="4"
+          :maxlength="2000"
+          show-count
+          :disabled="v2InstructionMode === 'template'"
+        />
+        <div style="font-size: 12px; color: #999; margin-top: 4px;">不填则使用默认策略生成</div>
+      </Form.Item>
+    </Form>
   </Modal>
 
   <Modal v-model:open="modalOpen" :title="modalTitle" :mask-closable="false" :confirm-loading="saving" @ok="handleSave">
@@ -2864,107 +3191,6 @@ onMounted(() => {
   </Modal
   >
 
-  <Modal
-    v-model:open="matchModalOpen"
-    title="匹配推荐"
-    :confirm-loading="matching"
-    @ok="handleMatchConfirm"
-    :width="1200"
-  >
-    <div style="margin-bottom: 12px; display: flex; gap: 12px; align-items: center;">
-      <DatePicker v-model:value="matchForm.date" placeholder="推荐日期" @change="() => { localStorage.setItem('matchForm_date', matchForm.date.format('YYYY-MM-DD')); runMatchPreview(); }" />
-      <Button @click="runMatchPreview" :loading="matchPreviewLoading">刷新预览</Button>
-      <Button type="primary" :loading="batchImagePostLoading" @click="handleBatchGenerateImagePost">批量生成贴图</Button>
-      <Button danger :loading="matchClearing" @click="handleClearAndMatch" style="margin-left: auto;">清理后重新匹配</Button>
-    </div>
-    <div style="color: #999; font-size: 12px; margin-bottom: 12px;">
-      以下为系统预匹配结果，请审核后确认。所有变更前可编辑标题或重新匹配用户。
-    </div>
-
-    <!-- 加载中 -->
-    <div v-if="matchPreviewLoading" style="text-align: center; padding: 32px;">
-      <Spin /> 正在加载匹配预览...
-    </div>
-
-    <!-- 匹配预览表格 -->
-    <div v-else>
-      <Table
-        :data-source="matchPreviewData"
-        :pagination="{ pageSize: 10 }"
-        size="small"
-        :scroll="{ x: 900 }"
-        row-key="titleId"
-        :row-selection="matchRowSelection"
-        style="border: 1px solid #f0f0f0; border-radius: 4px;"
-      >
-        <Table.Column title="标题" key="title" :width="280">
-          <template #default="{ record }">
-            <Input.TextArea
-              :value="record.editedTitle || record.title"
-              placeholder="可编辑标题"
-              :rows="2"
-              :auto-size="{ minRows: 1, maxRows: 3 }"
-              size="small"
-              @change="(e) => handleTitleEdit(record, e.target.value)"
-              style="font-size: 13px; width: 260px;"
-            />
-            <div v-if="record.editedTitle && record.editedTitle !== record.title" style="font-size: 11px; color: #52c41a;">已修改</div>
-          </template>
-        </Table.Column>
-        <Table.Column title="最高相似度" key="maxSimilarity" :width="80" align="center">
-          <template #default="{ record }">
-            <Tag v-if="record.maxSimilarity != null" :color="record.maxSimilarity >= 50 ? 'red' : record.maxSimilarity >= 25 ? 'orange' : 'green'" style="font-size: 12px;">
-              {{ record.maxSimilarity }}%
-            </Tag>
-            <span v-else style="color: #999;">-</span>
-          </template>
-        </Table.Column>
-        <Table.Column title="同质化程度" key="homogeneity" :width="90" align="center">
-          <template #default="{ record }">
-            <Tag v-if="record.homogeneity != null" :color="record.homogeneity >= 50 ? 'red' : record.homogeneity >= 25 ? 'orange' : 'green'" style="font-size: 12px;">
-              {{ record.homogeneity }}%
-            </Tag>
-            <span v-else style="color: #999;">-</span>
-          </template>
-        </Table.Column>
-        <Table.Column title="平台" dataIndex="platform" key="platform" :width="70" />
-        <Table.Column title="赛道" dataIndex="trackName" key="trackName" :width="80" />
-        <Table.Column title="匹配用户" key="user" :width="90">
-          <template #default="{ record }">
-            <a style="color: #1890ff;" @click="openHistoryModal(record.userId, record.username, record.editedTitle || record.title)">{{ record.username }}</a>
-            <div style="font-size: 11px; color: #999;">{{ record.userEmail }}</div>
-          </template>
-        </Table.Column>
-        <Table.Column title="操作" key="action" :width="150">
-          <template #default="{ record }">
-            <template v-if="record.approved">
-              <Tag color="green">已通过</Tag>
-            </template>
-            <template v-else>
-              <Button type="link" size="small" style="color: #52c41a;" @click="handleApproveOne(record)">通过</Button>
-              <Button
-                type="link" size="small"
-                :loading="matchOneLoadingId === record.titleId"
-                @click="handleRematchOne(record)"
-              >重配</Button>
-              <Button type="link" size="small" @click="openImagePostModal({ id: record.titleId })">贴图</Button>
-              <Popconfirm title="确定移除该项？" @confirm="handleRemoveMatch(record)">
-                <Button type="link" size="small" danger>移除</Button>
-              </Popconfirm>
-            </template>
-          </template>
-        </Table.Column>
-      </Table>
-
-      <div v-if="matchPreviewData.length === 0 && !matchPreviewLoading" style="text-align: center; padding: 24px; color: #999;">
-        暂无待匹配项
-      </div>
-
-      <div style="margin-top: 12px; font-size: 13px; color: #595959;">
-        共 <strong>{{ matchPreviewData.length }}</strong> 项待确认匹配
-      </div>
-    </div>
-  </Modal>
 
   <Modal v-model:open="modalOpen" :title="modalTitle" :mask-closable="false" :confirm-loading="saving" @ok="handleSave">
     <Form layout="vertical" style="margin-top: 12px;">

@@ -1,17 +1,21 @@
 package com.example.blogger.service;
 
 import com.example.blogger.entity.ArticleBlock;
+import com.example.blogger.entity.StyleConfig;
 import com.example.blogger.entity.TitleGenerationTask;
 import com.example.blogger.entity.TitleLibrary;
 import com.example.blogger.entity.Track;
 import com.example.blogger.entity.User;
 import com.example.blogger.mapper.TitleGenerationTaskMapper;
 import com.example.blogger.mapper.TrackMapper;
+import com.example.blogger.mapper.ExportTemplateMapper;
 import com.example.blogger.util.AiFlavorRemover;
 import com.example.blogger.util.ArticleJsonParser;
 import com.example.blogger.util.ArticleRenderer;
 import com.example.blogger.util.ArticleStyleProcessor;
 import com.example.blogger.util.DocxGenerator;
+import com.example.blogger.util.DocxStyleConfig;
+import com.example.blogger.util.DocxStyleResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,11 +68,14 @@ public class GenerationTaskExecutor {
     private final AiFlavorRemover aiFlavorRemover;
     private final com.example.blogger.mapper.ImageLibraryMapper imageLibraryMapper;
     private final TrackMapper trackMapper;
+    private final ExportTemplateMapper exportTemplateMapper;
     private final ContentCheckService contentCheckService;
     private final WritingStyleService writingStyleService;
     private final ArticleJsonParser articleJsonParser;
     private final ArticleStyleProcessor articleStyleProcessor;
     private final ArticleRenderer articleRenderer;
+    private final StyleConfigService styleConfigService;
+    private final DocxStyleResolver docxStyleResolver;
 
     public GenerationTaskExecutor(TitleGenerationTaskMapper taskMapper,
                                   TitleGenerationTaskService taskService,
@@ -80,11 +87,14 @@ public class GenerationTaskExecutor {
                                   AiFlavorRemover aiFlavorRemover,
                                   com.example.blogger.mapper.ImageLibraryMapper imageLibraryMapper,
                                   TrackMapper trackMapper,
+                                  ExportTemplateMapper exportTemplateMapper,
                                   ContentCheckService contentCheckService,
                                   WritingStyleService writingStyleService,
                                   ArticleJsonParser articleJsonParser,
                                   ArticleStyleProcessor articleStyleProcessor,
-                                  ArticleRenderer articleRenderer) {
+                                  ArticleRenderer articleRenderer,
+                                  StyleConfigService styleConfigService,
+                                  DocxStyleResolver docxStyleResolver) {
         this.taskMapper = taskMapper;
         this.taskService = taskService;
         this.llmService = llmService;
@@ -95,11 +105,14 @@ public class GenerationTaskExecutor {
         this.aiFlavorRemover = aiFlavorRemover;
         this.imageLibraryMapper = imageLibraryMapper;
         this.trackMapper = trackMapper;
+        this.exportTemplateMapper = exportTemplateMapper;
         this.contentCheckService = contentCheckService;
         this.writingStyleService = writingStyleService;
         this.articleJsonParser = articleJsonParser;
         this.articleStyleProcessor = articleStyleProcessor;
         this.articleRenderer = articleRenderer;
+        this.styleConfigService = styleConfigService;
+        this.docxStyleResolver = docxStyleResolver;
     }
 
     /**
@@ -118,6 +131,17 @@ public class GenerationTaskExecutor {
         log.info("[GenerationTaskExecutor] ========== 任务开始: id={}, titleLibraryId={}, title={} ==========",
                 task.getId(), task.getTitleLibraryId(), task.getTitle());
         long taskStartTime = System.currentTimeMillis();
+        // 在任务入口处读取一次样式策略，避免每个阶段重复 IO
+        String styleStrategy = "A";
+        try {
+            StyleConfig styleConfig = styleConfigService.findActive();
+            if (styleConfig != null && styleConfig.getStrategy() != null) {
+                styleStrategy = styleConfig.getStrategy().toUpperCase();
+            }
+            log.info("[GenerationTaskExecutor] [任务{}] 使用的样式策略: {}", task.getId(), styleStrategy);
+        } catch (Exception e) {
+            log.warn("[GenerationTaskExecutor] [任务{}] 读取样式策略失败, 使用默认 A: {}", task.getId(), e.getMessage());
+        }
         try {
             // 0. 将标题库生成状态置为“生成中”，前端可据此展示生成进度
             titleLibraryService.updateGenerateStatus(task.getTitleLibraryId(), 2);
@@ -145,15 +169,15 @@ public class GenerationTaskExecutor {
                 blocks = insertImageBlock(blocks, imageResult.content);
             }
 
-            // 6. 文章样式处理
-            blocks = articleStyleProcessor.process(blocks);
+            // 6. 文章样式处理（应用当前激活的 styleStrategy）
+            blocks = articleStyleProcessor.process(blocks, styleStrategy);
 
-            // 7. 渲染为最终文本
+            // 7. 渲染为最终文本（仅用于持久化 generated_content 字段和后续违禁词检测）
             String content = articleRenderer.render(blocks);
             taskService.updateGeneratedContent(task.getId(), content);
 
-            // 4. 生成 DOCX
-            DocxResult docx = generateDocx(task, content);
+            // 4. 生成 DOCX（直接传 blocks + strategy，让 DocxGenerator 做策略感知渲染）
+            DocxResult docx = generateDocx(task, blocks, content, styleStrategy);
 
             // 4.6 违禁词/敏感词检测，结果写入标题库
             checkBannedWords(task, content);
@@ -513,12 +537,14 @@ public class GenerationTaskExecutor {
      * 此阶段会检查任务是否已被停止，并更新任务进度为“文件写入完成”。
      *
      * @param task    当前任务
-     * @param content 阶段 3.5 插入图片后的正文
+     * @param blocks        阶段 6 样式处理后的 ArticleBlock 列表（用于策略感知渲染）
+     * @param content       阶段 3.5 插入图片后的正文（仅用于日志/调试）
+     * @param styleStrategy 当前激活的样式策略（A-G）
      * @return 包含生成文件 URL 和文件名的 {@link DocxResult}
      * @throws Exception DOCX 生成工具抛出的异常，或任务被停止时抛出
      */
-    private DocxResult generateDocx(TitleGenerationTask task, String content) throws Exception {
-        log.info("[GenerationTaskExecutor] [任务{}] Step 4/6: 开始生成DOCX文件", task.getId());
+    private DocxResult generateDocx(TitleGenerationTask task, List<ArticleBlock> blocks, String content, String styleStrategy) throws Exception {
+        log.info("[GenerationTaskExecutor] [任务{}] Step 4/6: 开始生成DOCX文件, strategy={}", task.getId(), styleStrategy);
         checkStopped(task.getId());
 
         String safeTitle = task.getTitle() != null ? task.getTitle() : "untitled";
@@ -537,30 +563,40 @@ public class GenerationTaskExecutor {
 
         taskService.updateProgress(task.getId(), 4, "写入文件中...");
 
-        // 获取用户主题色和字号配置
-        String themeColor = null;
-        Integer titleFontSize = null;
-        Integer contentFontSize = null;
+        // 解析用户导出模板；只有用户未指定具体模板时，才用其单独设置的主题色/字号覆盖默认模板
+        DocxStyleConfig styleConfig = new DocxStyleConfig();
         try {
             TitleLibrary titleLib = titleLibraryService.getById(task.getTitleLibraryId());
             if (titleLib != null && titleLib.getRecommendUserId() != null) {
                 User user = userService.getById(titleLib.getRecommendUserId());
                 if (user != null) {
-                    if (user.getThemeColor() != null && !user.getThemeColor().isEmpty()) {
-                        themeColor = user.getThemeColor();
+                    String userTemplateName = user.getTemplate();
+                    boolean hasExplicitTemplate = userTemplateName != null && !userTemplateName.isEmpty()
+                            && exportTemplateMapper.findByName(userTemplateName) != null;
+                    styleConfig = docxStyleResolver.resolve(userTemplateName);
+                    if (!hasExplicitTemplate) {
+                        if (user.getThemeColor() != null && !user.getThemeColor().isEmpty()) {
+                            styleConfig.setHeadingColor(user.getThemeColor());
+                            styleConfig.setPreviewColor(user.getThemeColor());
+                        }
+                        if (user.getTitleFontSize() != null && user.getTitleFontSize() > 0) {
+                            styleConfig.setHeadingFontSizePt(user.getTitleFontSize());
+                        }
+                        if (user.getContentFontSize() != null && user.getContentFontSize() > 0) {
+                            styleConfig.setBodyFontSizePt(user.getContentFontSize());
+                        }
                     }
-                    titleFontSize = user.getTitleFontSize();
-                    contentFontSize = user.getContentFontSize();
-                    log.info("[GenerationTaskExecutor] [任务{}] Step 4/6: 用户样式配置: themeColor={}, titleFontSize={}, contentFontSize={}",
-                            task.getId(), themeColor, titleFontSize, contentFontSize);
+                    log.info("[GenerationTaskExecutor] [任务{}] Step 4/6: 使用导出模板: {}, headingColor={}, bodyFontSizePt={}, headingFontSizePt={}",
+                            task.getId(), user.getTemplate(), styleConfig.getHeadingColor(), styleConfig.getBodyFontSizePt(), styleConfig.getHeadingFontSizePt());
                 }
             }
         } catch (Exception e) {
-            log.warn("[GenerationTaskExecutor] [任务{}] Step 4/6: 获取用户样式配置失败, 使用默认: {}", task.getId(), e.getMessage());
+            log.warn("[GenerationTaskExecutor] [任务{}] Step 4/6: 获取用户导出模板失败, 使用默认: {}", task.getId(), e.getMessage());
         }
 
         long docxStart = System.currentTimeMillis();
-        docxGenerator.generateDocx(task.getTitle(), content, filePath, themeColor, titleFontSize, contentFontSize);
+        // 走策略感知入口：根据 blocks + strategy + 导出模板样式 渲染 DOCX
+        docxGenerator.generateDocxFromBlocks(task.getTitle(), blocks, filePath, styleConfig, styleStrategy);
         log.info("[GenerationTaskExecutor] [任务{}] Step 4/6: DOCX生成完成, 耗时{}ms, path={}",
                 task.getId(), System.currentTimeMillis() - docxStart, filePath);
         taskService.updateProgress(task.getId(), 4, "文件写入完成");

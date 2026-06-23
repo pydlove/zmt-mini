@@ -56,7 +56,7 @@ public class TitleLibraryController {
     private final UserTrackMapper userTrackMapper;
     private final TitleRecommendationMapper titleRecommendationMapper;
     private final DataSource dataSource;
-    private final StyleMapper styleMapper;
+    private final ExportTemplateMapper exportTemplateMapper;
     private final PromptTemplateMapper promptTemplateMapper;
     private final EmailService emailService;
     private final EmailPushLogMapper emailPushLogMapper;
@@ -106,7 +106,7 @@ public class TitleLibraryController {
                                   UserTrackMapper userTrackMapper,
                                   TitleRecommendationMapper titleRecommendationMapper,
                                   DataSource dataSource,
-                                  StyleMapper styleMapper,
+                                  ExportTemplateMapper exportTemplateMapper,
                                   PromptTemplateMapper promptTemplateMapper,
                                   EmailService emailService,
                                   EmailPushLogMapper emailPushLogMapper,
@@ -128,7 +128,7 @@ public class TitleLibraryController {
         this.userTrackMapper = userTrackMapper;
         this.titleRecommendationMapper = titleRecommendationMapper;
         this.dataSource = dataSource;
-        this.styleMapper = styleMapper;
+        this.exportTemplateMapper = exportTemplateMapper;
         this.promptTemplateMapper = promptTemplateMapper;
         this.emailService = emailService;
         this.emailPushLogMapper = emailPushLogMapper;
@@ -1002,8 +1002,8 @@ public class TitleLibraryController {
             try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(response.getOutputStream(), StandardCharsets.UTF_8)) {
                 String[] headers = { "ID", "标题名称", "用户名", "样式风格", "描述", "推荐日期", "是否创作完成" };
 
-                List<com.example.blogger.entity.Style> allStyles = styleMapper.findAll();
-                Random styleRandom = new Random();
+                List<com.example.blogger.entity.ExportTemplate> allTemplates = exportTemplateMapper.findAll();
+                Random templateRandom = new Random();
 
                 for (int idx = 0; idx < titles.size(); idx++) {
                     TitleLibrary tl = titles.get(idx);
@@ -1030,8 +1030,8 @@ public class TitleLibraryController {
                     row.createCell(1).setCellValue(tl.getTitle() != null ? tl.getTitle() : "");
                     row.createCell(2).setCellValue(tl.getRecommendUserName() != null ? tl.getRecommendUserName() : "");
                     String styleValue = tl.getRecommendUserTemplate();
-                    if ((styleValue == null || styleValue.isEmpty()) && !allStyles.isEmpty()) {
-                        styleValue = allStyles.get(styleRandom.nextInt(allStyles.size())).getName();
+                    if ((styleValue == null || styleValue.isEmpty()) && !allTemplates.isEmpty()) {
+                        styleValue = allTemplates.get(templateRandom.nextInt(allTemplates.size())).getName();
                     }
                     row.createCell(3).setCellValue(styleValue != null ? styleValue : "");
                     row.createCell(4).setCellValue(tl.getDescription() != null ? tl.getDescription() : "");
@@ -1862,9 +1862,10 @@ public class TitleLibraryController {
 
     /**
      * 匹配预览：模拟匹配逻辑，返回待审核的匹配列表（不保存）
+     * 返回结构：{ matches: [...], needGenerateTracks: [{trackId, trackName, platform}] }
      */
     @GetMapping("/match-preview")
-    public Result<List<Map<String, Object>>> matchPreview(@RequestParam(value = "date", required = false) String dateStr) {
+    public Result<Map<String, Object>> matchPreview(@RequestParam(value = "date", required = false) String dateStr) {
         try {
             LocalDate targetDate = (dateStr != null && !dateStr.isEmpty()) ? LocalDate.parse(dateStr) : LocalDate.now();
             List<TitleLibrary> allTitles = titleLibraryService.list();
@@ -1899,8 +1900,26 @@ public class TitleLibraryController {
 
             List<Track> allTracks = trackMapper.findAll();
             Map<String, String> trackNameMap = new HashMap<>();
+            Map<String, String> trackPlatformMap = new HashMap<>();
             for (Track t : allTracks) {
                 if (t.getName() != null) trackNameMap.put(t.getId(), t.getName());
+                if (t.getPlatforms() != null) trackPlatformMap.put(t.getId(), t.getPlatforms());
+            }
+
+            // 加载每个用户的历史标题文本，用于相似度计算
+            Map<String, List<String>> userHistoryTitlesMap = new HashMap<>();
+            for (User user : users) {
+                List<Map<String, Object>> history = titleRecommendationMapper.findHistoryByUserId(user.getId());
+                List<String> titlesList = new ArrayList<>();
+                if (history != null) {
+                    for (Map<String, Object> h : history) {
+                        Object titleName = h.get("titleName");
+                        if (titleName != null) {
+                            titlesList.add(titleName.toString());
+                        }
+                    }
+                }
+                userHistoryTitlesMap.put(user.getId(), titlesList);
             }
 
             Map<String, Set<String>> userHistoryMap = new HashMap<>();
@@ -1946,6 +1965,15 @@ public class TitleLibraryController {
             // 打乱所有候选匹配对
             Collections.shuffle(allCandidates, random);
 
+            // 统计每个赛道的候选情况（用于判断哪些赛道需要生成新标题）
+            Map<String, Integer> trackCandidateCount = new HashMap<>();
+            Map<String, Integer> trackPassedCount = new HashMap<>();
+            for (Map<String, Object> cand : allCandidates) {
+                TitleLibrary title = (TitleLibrary) cand.get("title");
+                String trackId = title.getTrackId();
+                trackCandidateCount.put(trackId, trackCandidateCount.getOrDefault(trackId, 0) + 1);
+            }
+
             Set<String> usedTitleIds = new HashSet<>();
             Set<String> usedCombos = new HashSet<>();
             for (Map<String, Object> cand : allCandidates) {
@@ -1956,8 +1984,19 @@ public class TitleLibraryController {
                 String combo = user.getId() + ":" + title.getTrackId();
                 if (usedCombos.contains(combo)) continue;
 
+                // 计算与用户历史标题的最大相似度
+                List<String> historyTitles = userHistoryTitlesMap.getOrDefault(user.getId(), Collections.emptyList());
+                double maxSim = 0.0;
+                for (String histTitle : historyTitles) {
+                    double sim = com.example.blogger.util.TextSimilarityUtil.similarity(title.getTitle(), histTitle);
+                    if (sim > maxSim) maxSim = sim;
+                }
+                // 相似度高于20%的不允许推荐
+                if (maxSim > 0.20) continue;
+
                 usedTitleIds.add(title.getId());
                 usedCombos.add(combo);
+                trackPassedCount.put(title.getTrackId(), trackPassedCount.getOrDefault(title.getTrackId(), 0) + 1);
 
                 Map<String, Object> item = new HashMap<>();
                 item.put("titleId", title.getId());
@@ -1971,10 +2010,32 @@ public class TitleLibraryController {
                 item.put("editedTitle", title.getTitle());
                 item.put("generatedFileUrl", title.getGeneratedFileUrl());
                 item.put("generatedFileName", title.getGeneratedFileName());
+                item.put("maxSimilarity", (int) Math.round(maxSim * 100));
                 proposedMatches.add(item);
             }
 
-            return Result.ok(proposedMatches);
+            // 找出需要生成新标题的赛道（有候选但全因相似度过高被过滤）
+            List<Map<String, Object>> needGenerateTracks = new ArrayList<>();
+            for (String trackId : trackCandidateCount.keySet()) {
+                int total = trackCandidateCount.getOrDefault(trackId, 0);
+                int passed = trackPassedCount.getOrDefault(trackId, 0);
+                if (total > 0 && passed == 0) {
+                    Map<String, Object> trackInfo = new HashMap<>();
+                    trackInfo.put("trackId", trackId);
+                    trackInfo.put("trackName", trackNameMap.getOrDefault(trackId, trackId));
+                    String platforms = trackPlatformMap.get(trackId);
+                    if (platforms != null && !platforms.isEmpty()) {
+                        String[] ps = platforms.split(",");
+                        trackInfo.put("platform", ps[0].trim());
+                    }
+                    needGenerateTracks.add(trackInfo);
+                }
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("matches", proposedMatches);
+            response.put("needGenerateTracks", needGenerateTracks);
+            return Result.ok(response);
         } catch (Exception e) {
             e.printStackTrace();
             return Result.error("预览失败：" + e.getMessage());
@@ -2555,16 +2616,23 @@ public class TitleLibraryController {
     /**
      * 核心贴图生成逻辑（委托给 Service）
      */
-    private Result<java.util.List<String>> doGenerateImagePost(String id) {
+    private Result<java.util.List<String>> doGenerateImagePost(String id, String requestedStyle) {
         try {
-            // 读取用户指定的主题配置（手动触发时优先用配置主题）
-            String theme = null;
+            // 读取风格配置：请求参数 > image_post_style > image_post_theme（兼容）
+            String style = requestedStyle;
             String fontFamily = null;
             String bodyFontFamily = null;
             try {
-                Config cfgTheme = configMapper.findByKey("image_post_theme");
-                if (cfgTheme != null && cfgTheme.getConfigValue() != null && !cfgTheme.getConfigValue().isEmpty()) {
-                    theme = cfgTheme.getConfigValue().trim();
+                if (style == null || style.isEmpty()) {
+                    Config cfgStyle = configMapper.findByKey("image_post_style");
+                    if (cfgStyle != null && cfgStyle.getConfigValue() != null && !cfgStyle.getConfigValue().isEmpty()) {
+                        style = cfgStyle.getConfigValue().trim();
+                    } else {
+                        Config cfgTheme = configMapper.findByKey("image_post_theme");
+                        if (cfgTheme != null && cfgTheme.getConfigValue() != null && !cfgTheme.getConfigValue().isEmpty()) {
+                            style = cfgTheme.getConfigValue().trim();
+                        }
+                    }
                 }
                 Config cfgFont = configMapper.findByKey("image_post_font");
                 if (cfgFont != null && cfgFont.getConfigValue() != null && !cfgFont.getConfigValue().isEmpty()) {
@@ -2575,9 +2643,9 @@ public class TitleLibraryController {
                     bodyFontFamily = cfgBodyFont.getConfigValue().trim();
                 }
             } catch (Exception e) {
-                log.warn("[generateImagePost] 读取贴图配置失败，使用随机主题", e);
+                log.warn("[generateImagePost] 读取贴图配置失败，使用随机风格", e);
             }
-            java.util.List<String> images = titleLibraryService.generateImagePosts(id, theme, fontFamily, bodyFontFamily);
+            java.util.List<String> images = titleLibraryService.generateImagePosts(id, style, fontFamily, bodyFontFamily);
             return Result.ok(images);
         } catch (Exception e) {
             log.error("[generateImagePost] 生成贴图失败: id={}", id, e);
@@ -2586,19 +2654,21 @@ public class TitleLibraryController {
     }
 
     /**
-     * 生成文章贴图：将 DOCX 切分成多张 9:16 PNG
+     * 生成文章贴图：将 DOCX 切分成多张 3:4 卡片 PNG
      */
     @PostMapping("/{id}/generate-image-post")
-    public Result<java.util.List<String>> generateImagePost(@PathVariable String id) {
-        return doGenerateImagePost(id);
+    public Result<java.util.List<String>> generateImagePost(@PathVariable String id,
+                                                            @RequestParam(required = false) String style) {
+        return doGenerateImagePost(id, style);
     }
 
     /**
      * 批量生成文章贴图
      */
     @PostMapping("/batch-generate-image-post")
-    public Result<Map<String, Object>> batchGenerateImagePost(@RequestBody Map<String, java.util.List<String>> req) {
-        java.util.List<String> titleIds = req.get("titleIds");
+    public Result<Map<String, Object>> batchGenerateImagePost(@RequestBody Map<String, Object> req) {
+        java.util.List<String> titleIds = (java.util.List<String>) req.get("titleIds");
+        String style = req.get("style") != null ? req.get("style").toString() : null;
         if (titleIds == null || titleIds.isEmpty()) {
             return Result.error("请选择要生成贴图的标题");
         }
@@ -2607,7 +2677,7 @@ public class TitleLibraryController {
         java.util.List<String> errors = new ArrayList<>();
 
         for (String id : titleIds) {
-            Result<java.util.List<String>> result = doGenerateImagePost(id);
+            Result<java.util.List<String>> result = doGenerateImagePost(id, style);
             if (result.getCode() == 200) {
                 success++;
             } else {
@@ -3153,25 +3223,11 @@ public class TitleLibraryController {
      * 构建单标题文章生成的 prompt（注入赛道反馈）
      */
     private String buildSingleArticlePrompt(TitleLibrary titleLib) {
-        String styleDesc = "";
+        JsonNode configNode = loadDefaultTemplateConfig();
+        String styleDesc = configNode != null ? buildTemplateDesc(configNode) : "";
         String styleCss = buildDefaultStyleCss();
-        Style defaultStyle = styleMapper.findDefault();
-        if (defaultStyle != null && defaultStyle.getStyleJson() != null && !defaultStyle.getStyleJson().isEmpty()) {
-            try {
-                ObjectMapper mapper = new ObjectMapper();
-                JsonNode styleNode = mapper.readTree(defaultStyle.getStyleJson());
-                StringBuilder sb = new StringBuilder();
-                sb.append("字体：").append(styleNode.path("fontFamily").asText("默认")).append("；");
-                sb.append("正文字号：").append(styleNode.path("fontSize").asText("16px")).append("；");
-                sb.append("行高：").append(styleNode.path("lineHeight").asText("1.8")).append("；");
-                sb.append("段落间距：").append(styleNode.path("paragraphSpacing").asText("1em")).append("；");
-                sb.append("标题颜色：").append(styleNode.path("titleColor").asText("#333")).append("；");
-                sb.append("正文颜色：").append(styleNode.path("textColor").asText("#333")).append("；");
-                styleDesc = sb.toString();
-                styleCss = buildStyleCss(styleNode);
-            } catch (Exception e) {
-                // ignore
-            }
+        if (configNode != null) {
+            styleCss = buildStyleCss(configNode);
         }
 
         // Load prompt template
@@ -3184,11 +3240,8 @@ public class TitleLibraryController {
         if (promptTemplate != null && promptTemplate.getContent() != null && !promptTemplate.getContent().isEmpty()) {
             String templateContent = promptTemplate.getContent();
 
-            // Build stylePrompt (same as buildPromptFromTemplate)
-            String stylePrompt = "";
-            if (defaultStyle != null) {
-                stylePrompt = defaultStyle.getScene() != null ? defaultStyle.getScene() : "";
-            }
+            // Build stylePrompt from default export template
+            String stylePrompt = buildTemplatePrompt(configNode, null);
 
             promptText = templateContent
                     // Support both {var} and ${var} formats
@@ -3254,11 +3307,8 @@ public class TitleLibraryController {
         String result = template;
 
         // Inject stylePrompt
-        String stylePrompt = "";
-        Style defaultStyle = styleMapper.findDefault();
-        if (defaultStyle != null) {
-            stylePrompt = defaultStyle.getScene() != null ? defaultStyle.getScene() : "";
-        }
+        JsonNode configNode = loadDefaultTemplateConfig();
+        String stylePrompt = buildTemplatePrompt(configNode, null);
         result = result.replace("${stylePrompt}", stylePrompt);
 
         // Inject field variables
@@ -3296,29 +3346,10 @@ public class TitleLibraryController {
 
         String templateContent = promptTemplate.getContent();
 
-        // Build styleDesc and stylePrompt from default style
-        String styleDesc = "";
-        String stylePrompt = "";
-        Style defaultStyle = styleMapper.findDefault();
-        if (defaultStyle != null) {
-            stylePrompt = defaultStyle.getScene() != null ? defaultStyle.getScene() : "";
-            if (defaultStyle.getStyleJson() != null && !defaultStyle.getStyleJson().isEmpty()) {
-                try {
-                    ObjectMapper mapper = new ObjectMapper();
-                    JsonNode styleNode = mapper.readTree(defaultStyle.getStyleJson());
-                    StringBuilder sb = new StringBuilder();
-                    sb.append("字体：").append(styleNode.path("fontFamily").asText("默认")).append("；");
-                    sb.append("正文字号：").append(styleNode.path("fontSize").asText("16px")).append("；");
-                    sb.append("行高：").append(styleNode.path("lineHeight").asText("1.8")).append("；");
-                    sb.append("段落间距：").append(styleNode.path("paragraphSpacing").asText("1em")).append("；");
-                    sb.append("标题颜色：").append(styleNode.path("titleColor").asText("#333")).append("；");
-                    sb.append("正文颜色：").append(styleNode.path("textColor").asText("#333")).append("；");
-                    styleDesc = sb.toString();
-                } catch (Exception e) {
-                    // ignore parse error
-                }
-            }
-        }
+        // Build styleDesc and stylePrompt from default export template
+        JsonNode configNode = loadDefaultTemplateConfig();
+        String styleDesc = buildTemplateDesc(configNode);
+        String stylePrompt = buildTemplatePrompt(configNode, null);
 
         // Replace variables: support both {var} and ${var} formats
         // If variable not present in template, replace() does nothing (keeps original text)
@@ -3946,38 +3977,27 @@ public class TitleLibraryController {
                     continue;
                 }
 
-                // Get user's style
-                Style style = null;
+                // Get user's export template
+                com.example.blogger.entity.ExportTemplate template = null;
+                JsonNode configNode = null;
                 if (user.getTemplate() != null && !user.getTemplate().isEmpty()) {
-                    style = styleMapper.findByName(user.getTemplate());
+                    template = exportTemplateMapper.findByName(user.getTemplate());
                 }
-                if (style == null) {
-                    style = styleMapper.findDefault();
+                if (template == null) {
+                    template = exportTemplateMapper.findDefault();
                 }
-
-                // Parse style JSON
-                String styleDesc = "";
-                String styleCss = buildDefaultStyleCss();
-                if (style != null && style.getStyleJson() != null && !style.getStyleJson().isEmpty()) {
+                if (template != null && template.getConfig() != null && !template.getConfig().isEmpty()) {
                     try {
                         ObjectMapper mapper = new ObjectMapper();
-                        JsonNode styleNode = mapper.readTree(style.getStyleJson());
-                        StringBuilder sb = new StringBuilder();
-                        sb.append("字体：").append(styleNode.path("fontFamily").asText("默认")).append("；");
-                        sb.append("正文字号：").append(styleNode.path("fontSize").asText("16px")).append("；");
-                        sb.append("行高：").append(styleNode.path("lineHeight").asText("1.8")).append("；");
-                        sb.append("段落间距：").append(styleNode.path("paragraphSpacing").asText("1em")).append("；");
-                        sb.append("标题颜色：").append(styleNode.path("titleColor").asText("#333")).append("；");
-                        sb.append("正文颜色：").append(styleNode.path("textColor").asText("#333")).append("；");
-                        sb.append("引用背景：").append(styleNode.path("quoteBg").asText("#f5f5f5")).append("；");
-                        sb.append("H1字号：").append(styleNode.path("h1Size").asText("24px")).append("；");
-                        sb.append("H2字号：").append(styleNode.path("h2Size").asText("20px"));
-                        styleDesc = sb.toString();
-                        styleCss = buildStyleCss(styleNode);
+                        configNode = mapper.readTree(template.getConfig());
                     } catch (Exception e) {
-                        // ignore parse error, use defaults
+                        // ignore parse error
                     }
                 }
+
+                // Parse template config
+                String styleDesc = configNode != null ? buildTemplateDesc(configNode) : "";
+                String styleCss = configNode != null ? buildStyleCss(configNode) : buildDefaultStyleCss();
 
                 task.put("message", "正在生成文章（" + (completed + 1) + "/" + recommendations.size() + "）：" + titleLib.getTitle());
 
@@ -3992,8 +4012,8 @@ public class TitleLibraryController {
                     "/Users/panyong/aio_project/公众号/样式"
                 };
 
-                if (style != null && style.getName() != null && !style.getName().isEmpty()) {
-                    String docxName = style.getName() + ".docx";
+                if (template != null && template.getName() != null && !template.getName().isEmpty()) {
+                    String docxName = template.getName() + ".docx";
                     for (String dirPath : possibleStyleDirs) {
                         File f = new File(dirPath, docxName);
                         if (f.exists()) {
@@ -4110,7 +4130,56 @@ public class TitleLibraryController {
         }
     }
 
+    private JsonNode loadDefaultTemplateConfig() {
+        com.example.blogger.entity.ExportTemplate tpl = exportTemplateMapper.findDefault();
+        if (tpl == null) {
+            List<com.example.blogger.entity.ExportTemplate> all = exportTemplateMapper.findAll();
+            if (!all.isEmpty()) {
+                tpl = all.get(0);
+            }
+        }
+        if (tpl == null || tpl.getConfig() == null || tpl.getConfig().isEmpty()) {
+            return null;
+        }
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            return mapper.readTree(tpl.getConfig());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String buildTemplateDesc(JsonNode configNode) {
+        if (configNode == null) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("字体：").append(configNode.path("fontFamily").asText("默认")).append("；");
+        sb.append("标题字体：").append(configNode.path("headingFontFamily").asText("默认")).append("；");
+        sb.append("正文字号：").append(configNode.path("bodyFontSizePt").asInt(12)).append("pt；");
+        sb.append("标题字号：").append(configNode.path("headingFontSizePt").asInt(16)).append("pt；");
+        sb.append("行距：").append(configNode.path("lineSpacing").asInt(360) / 240.0).append("；");
+        sb.append("段后距：").append(configNode.path("paragraphSpacingAfter").asInt(200) / 20.0).append("pt；");
+        sb.append("标题颜色：").append(configNode.path("headingColor").asText("#333")).append("；");
+        sb.append("正文颜色：").append(configNode.path("bodyColor").asText("#333")).append("；");
+        sb.append("引用背景：").append(configNode.path("quoteBg").asText("#f5f5f5"));
+        return sb.toString();
+    }
+
+    private String buildTemplatePrompt(JsonNode configNode, com.example.blogger.entity.ExportTemplate tpl) {
+        if (configNode != null) {
+            String desc = configNode.path("description").asText("");
+            if (!desc.isEmpty()) return desc;
+        }
+        if (tpl != null && tpl.getName() != null) {
+            return tpl.getName();
+        }
+        return "";
+    }
+
     private String buildDefaultStyleCss() {
+        JsonNode config = loadDefaultTemplateConfig();
+        if (config != null) {
+            return buildStyleCss(config);
+        }
         return ".article-content{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif !important;line-height:1.8 !important;color:#333 !important;}"
                 + ".article-content h1{font-size:24px !important;font-weight:700 !important;color:#1a1a1a !important;margin-bottom:16px !important;line-height:1.4 !important;}"
                 + ".article-content h2{font-size:20px !important;font-weight:600 !important;color:#1a1a1a !important;margin-top:24px !important;margin-bottom:12px !important;line-height:1.4 !important;}"
@@ -4120,24 +4189,23 @@ public class TitleLibraryController {
                 + ".article-title{font-size:24px;font-weight:700;color:#1a1a1a;margin-bottom:20px;line-height:1.4;}";
     }
 
-    private String buildStyleCss(JsonNode styleNode) {
-        String fontFamily = styleNode.path("fontFamily").asText("-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif");
-        String fontSize = styleNode.path("fontSize").asText("16px");
-        String lineHeight = styleNode.path("lineHeight").asText("1.8");
-        String paragraphSpacing = styleNode.path("paragraphSpacing").asText("1em");
-        String titleColor = styleNode.path("titleColor").asText("#1a1a1a");
-        String textColor = styleNode.path("textColor").asText("#333");
-        String quoteBg = styleNode.path("quoteBg").asText("#f5f5f5");
-        String h1Size = styleNode.path("h1Size").asText("24px");
-        String h2Size = styleNode.path("h2Size").asText("20px");
+    private String buildStyleCss(JsonNode configNode) {
+        String fontFamily = configNode.path("fontFamily").asText("-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif");
+        double bodyFontSizePx = configNode.path("bodyFontSizePt").asInt(12) * 1.33;
+        double headingFontSizePx = configNode.path("headingFontSizePt").asInt(16) * 1.33;
+        double lineHeight = configNode.path("lineSpacing").asInt(360) / 240.0;
+        double paragraphSpacingPx = configNode.path("paragraphSpacingAfter").asInt(200) / 20.0 * 1.33;
+        String headingColor = configNode.path("headingColor").asText("#1a1a1a");
+        String bodyColor = configNode.path("bodyColor").asText("#333");
+        String quoteBg = configNode.path("quoteBg").asText("#f5f5f5");
 
-        return ".article-content{font-family:" + fontFamily + " !important;line-height:" + lineHeight + " !important;color:" + textColor + " !important;}"
-                + ".article-content h1{font-size:" + h1Size + " !important;font-weight:700 !important;color:" + titleColor + " !important;margin-bottom:" + paragraphSpacing + " !important;line-height:1.4 !important;}"
-                + ".article-content h2{font-size:" + h2Size + " !important;font-weight:600 !important;color:" + titleColor + " !important;margin-top:24px !important;margin-bottom:12px !important;line-height:1.4 !important;}"
-                + ".article-content p{font-size:" + fontSize + " !important;margin-bottom:" + paragraphSpacing + " !important;text-align:justify !important;line-height:" + lineHeight + " !important;color:" + textColor + " !important;}"
-                + ".article-content blockquote{background:" + quoteBg + " !important;border-left:4px solid #1890ff !important;padding:12px 16px !important;margin:16px 0 !important;color:#555 !important;}"
+        return ".article-content{font-family:" + fontFamily + " !important;line-height:" + lineHeight + " !important;color:" + bodyColor + " !important;}"
+                + ".article-content h1{font-size:" + headingFontSizePx + "px !important;font-weight:700 !important;color:" + headingColor + " !important;margin-bottom:" + paragraphSpacingPx + "px !important;line-height:1.4 !important;}"
+                + ".article-content h2{font-size:" + (headingFontSizePx * 0.875) + "px !important;font-weight:600 !important;color:" + headingColor + " !important;margin-top:24px !important;margin-bottom:12px !important;line-height:1.4 !important;}"
+                + ".article-content p{font-size:" + bodyFontSizePx + "px !important;margin-bottom:" + paragraphSpacingPx + "px !important;text-align:justify !important;line-height:" + lineHeight + " !important;color:" + bodyColor + " !important;}"
+                + ".article-content blockquote{background:" + quoteBg + " !important;border-left:4px solid " + headingColor + " !important;padding:12px 16px !important;margin:16px 0 !important;color:#555 !important;}"
                 + "body{max-width:680px;margin:0 auto;padding:24px;}"
-                + ".article-title{font-size:" + h1Size + ";font-weight:700;color:" + titleColor + ";margin-bottom:20px;line-height:1.4;}";
+                + ".article-title{font-size:" + headingFontSizePx + "px;font-weight:700;color:" + headingColor + ";margin-bottom:20px;line-height:1.4;}";
     }
 
     private String sanitizeHtmlContent(String content) {

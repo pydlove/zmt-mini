@@ -2,13 +2,13 @@
 import { ref, onMounted } from 'vue'
 import { Card, Table, Button, Modal, Form, Input, InputNumber, Switch, message, Tag, Checkbox } from 'ant-design-vue'
 import { listMembershipPlans, saveMembershipPlan, deleteMembershipPlan } from '../api/membershipPlan.js'
-import { listStyles } from '../api/style.js'
+import { listExportTemplates } from '../api/exportTemplate.js'
 
 const plans = ref([])
 const modalOpen = ref(false)
 const editingId = ref(null)
 const formRef = ref()
-const allStyles = ref([])
+const allTemplates = ref([])
 
 const ALL_PLATFORMS = ['公众号', '今日头条', '百家号']
 
@@ -57,10 +57,10 @@ function parsePermissions(plan) {
   }
 }
 
-async function loadStyles() {
+async function loadTemplates() {
   try {
-    const data = await listStyles()
-    allStyles.value = (data || []).filter(s => s.status !== '已删除')
+    const data = await listExportTemplates()
+    allTemplates.value = (data || []).filter(t => t.isDeleted !== 1)
   } catch (e) {
     // silent
   }
@@ -78,7 +78,7 @@ async function loadData() {
 function openModal(plan) {
   modalOpen.value = true
   editingId.value = plan ? plan.id : null
-  loadStyles()
+  loadTemplates()
   const perms = plan ? parsePermissions(plan) : {}
   if (plan) {
     const features = parseFeatures(plan)
@@ -325,13 +325,13 @@ onMounted(loadData)
         </div>
 
         <div>
-          <div style="font-size: 13px; font-weight: 500; color: #595959; margin-bottom: 6px;">可选文章样式</div>
-          <div v-if="allStyles.length === 0" style="font-size: 12px; color: #999;">暂无样式数据</div>
+          <div style="font-size: 13px; font-weight: 500; color: #595959; margin-bottom: 6px;">可选导出模板</div>
+          <div v-if="allTemplates.length === 0" style="font-size: 12px; color: #999;">暂无模板数据</div>
           <div v-else style="display: flex; flex-wrap: wrap; gap: 12px;">
-            <Checkbox v-for="s in allStyles" :key="s.id" :value="s.name" :checked="form.permissionsTemplates.includes(s.name)" @update:checked="(val) => {
-              if (val) { if (!form.permissionsTemplates.includes(s.name)) form.permissionsTemplates.push(s.name) }
-              else { form.permissionsTemplates = form.permissionsTemplates.filter(x => x !== s.name) }
-            }">{{ s.name }}</Checkbox>
+            <Checkbox v-for="t in allTemplates" :key="t.id" :value="t.name" :checked="form.permissionsTemplates.includes(t.name)" @update:checked="(val) => {
+              if (val) { if (!form.permissionsTemplates.includes(t.name)) form.permissionsTemplates.push(t.name) }
+              else { form.permissionsTemplates = form.permissionsTemplates.filter(x => x !== t.name) }
+            }">{{ t.name }}</Checkbox>
           </div>
         </div>
       </div>

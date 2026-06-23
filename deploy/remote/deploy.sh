@@ -160,9 +160,16 @@ eval "$SSH_CMD $REMOTE_HOST 'cd /root/app/zhiwo/admin-service/ && unzip -oq blog
 log_info "上传管理端生产配置..."
 retry_scp "$PROJECT_DIR/services/admin-backend/src/main/resources/application-prod.yml" "$REMOTE_HOST:/root/app/zhiwo/admin-service/"
 
+log_info "上传管理端样式模板文件..."
+eval "$SSH_CMD $REMOTE_HOST 'mkdir -p /root/app/zhiwo/admin-service/styles'"
+retry_scp "$PROJECT_DIR/services/admin-backend/styles/." "$REMOTE_HOST:/root/app/zhiwo/admin-service/styles/"
+
 log_info "上传 Python 脚本..."
 eval "$SSH_CMD $REMOTE_HOST 'mkdir -p /root/app/zhiwo/scripts/py'"
 retry_scp "$PROJECT_DIR/services/admin-backend/src/main/resources/py/." "$REMOTE_HOST:/root/app/zhiwo/scripts/py/"
+
+log_info "同步 Python 脚本到 admin-service 目录（供样式模板后处理使用）..."
+eval "$SSH_CMD $REMOTE_HOST 'mkdir -p /root/app/zhiwo/admin-service/src/main/resources/py && cp -r /root/app/zhiwo/scripts/py/* /root/app/zhiwo/admin-service/src/main/resources/py/'"
 
 # 上传字体目录（供 Python 贴图脚本使用，服务器路径与脚本内部 _CUSTOM_FONT_DIR 对齐）
 log_info "上传字体文件..."

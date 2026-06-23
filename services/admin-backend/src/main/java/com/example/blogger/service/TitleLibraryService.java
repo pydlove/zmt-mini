@@ -45,9 +45,8 @@ import java.util.stream.Collectors;
 public class TitleLibraryService {
     private static final Logger log = LoggerFactory.getLogger(TitleLibraryService.class);
 
-    private static final List<String> RANDOM_THEMES = Arrays.asList(
-        "morandi-cream", "mint-fresh", "sunset-blush", "midnight",
-        "lavender", "klein-blue", "gradient-ins", "newspaper"
+    private static final List<String> CARD_STYLES = Arrays.asList(
+        "xiaohongshu", "wechat", "douyin", "literary", "minimal", "business"
     );
 
     private final TitleLibraryMapper titleLibraryMapper;
@@ -649,9 +648,9 @@ return result;
     }
 
     /**
-     * 为指定标题生成贴图（支持指定主题，null 则随机；支持指定字体，null 则读取配置或自动选择）
+     * 为指定标题生成贴图（支持指定风格，null 则随机；支持指定字体，null 则读取配置或自动选择）
      */
-    public List<String> generateImagePosts(String titleLibraryId, String theme, String fontFamily, String bodyFontFamily) throws Exception {
+    public List<String> generateImagePosts(String titleLibraryId, String style, String fontFamily, String bodyFontFamily) throws Exception {
         TitleLibrary titleLib = this.getById(titleLibraryId);
         if (titleLib == null) {
             throw new RuntimeException("TitleLibrary不存在: " + titleLibraryId);
@@ -669,36 +668,17 @@ return result;
         log.info("[generateImagePosts] titleId={}, docxPath={}, generatedFileUrl={}", titleLibraryId, docxPath, titleLib.getGeneratedFileUrl());
 
         // 读取全局贴图配置
-        String splitMode = "height";
-        int imgWidth = 1080;
-        int imgHeight = 1920;
-        String bgColor = "#ffffff";
-        String coverGradient = "#f8f3e0";
         try {
-            Config cfg = configMapper.findByKey("image_post_split_mode");
-            if (cfg != null && cfg.getConfigValue() != null && !cfg.getConfigValue().isEmpty()) {
-                splitMode = cfg.getConfigValue();
-            }
-            Config cfgW = configMapper.findByKey("image_post_width");
-            if (cfgW != null && cfgW.getConfigValue() != null) {
-                imgWidth = Integer.parseInt(cfgW.getConfigValue().trim());
-            }
-            Config cfgH = configMapper.findByKey("image_post_height");
-            if (cfgH != null && cfgH.getConfigValue() != null) {
-                imgHeight = Integer.parseInt(cfgH.getConfigValue().trim());
-            }
-            Config cfgBg = configMapper.findByKey("image_post_bg_color");
-            if (cfgBg != null && cfgBg.getConfigValue() != null) {
-                bgColor = cfgBg.getConfigValue();
-            }
-            Config cfgGrad = configMapper.findByKey("image_post_cover_gradient");
-            if (cfgGrad != null && cfgGrad.getConfigValue() != null) {
-                coverGradient = cfgGrad.getConfigValue();
-            }
-            if (theme == null || theme.isEmpty()) {
-                Config cfgTheme = configMapper.findByKey("image_post_theme");
-                if (cfgTheme != null && cfgTheme.getConfigValue() != null && !cfgTheme.getConfigValue().isEmpty()) {
-                    theme = cfgTheme.getConfigValue().trim();
+            if (style == null || style.isEmpty()) {
+                Config cfgStyle = configMapper.findByKey("image_post_style");
+                if (cfgStyle != null && cfgStyle.getConfigValue() != null && !cfgStyle.getConfigValue().isEmpty()) {
+                    style = cfgStyle.getConfigValue().trim();
+                } else {
+                    // 兼容旧配置 image_post_theme
+                    Config cfgTheme = configMapper.findByKey("image_post_theme");
+                    if (cfgTheme != null && cfgTheme.getConfigValue() != null && !cfgTheme.getConfigValue().isEmpty()) {
+                        style = cfgTheme.getConfigValue().trim();
+                    }
                 }
             }
             if (fontFamily == null || fontFamily.isEmpty()) {
@@ -717,11 +697,16 @@ return result;
             log.warn("[generateImagePosts] 读取贴图配置失败，使用默认配置", e);
         }
 
-        // 随机主题
-        if (theme == null || theme.isEmpty()) {
-            int idx = (int) (Math.random() * RANDOM_THEMES.size());
-            theme = RANDOM_THEMES.get(idx);
-            log.info("[generateImagePosts] 使用随机主题: {}", theme);
+        // 随机风格
+        if (style == null || style.isEmpty()) {
+            int idx = (int) (Math.random() * CARD_STYLES.size());
+            style = CARD_STYLES.get(idx);
+            log.info("[generateImagePosts] 使用随机风格: {}", style);
+        }
+        // 若旧 theme 不在新风格列表中，兜底到小红书
+        if (!CARD_STYLES.contains(style)) {
+            log.warn("[generateImagePosts] 未知风格 '{}', 兜底到 xiaohongshu", style);
+            style = "xiaohongshu";
         }
 
         String outputDir = System.getProperty("user.dir") + File.separator + "uploads" + File.separator + "image-posts" + File.separator + titleLibraryId;
@@ -738,22 +723,28 @@ return result;
         command.add(docxPath);
         command.add(outputDir);
         command.add(titleLibraryId);
-        command.add("--split-mode");
-        command.add(splitMode);
-        command.add("--width");
-        command.add(String.valueOf(imgWidth));
-        command.add("--height");
-        command.add(String.valueOf(imgHeight));
-        command.add("--bg-color");
-        command.add(bgColor);
-        command.add("--cover-gradient");
-        command.add(coverGradient);
-        command.add("--subtitle");
-        command.add(titleLib.getPlatform() != null ? titleLib.getPlatform() : "");
+        command.add("--style");
+        command.add(style);
         command.add("--title");
         command.add(titleLib.getTitle() != null ? titleLib.getTitle() : "");
-        command.add("--theme");
-        command.add(theme);
+        String brandText = titleLib.getRecommendUserName() != null && !titleLib.getRecommendUserName().isEmpty()
+                ? titleLib.getRecommendUserName()
+                : "博主编";
+        command.add("--brand-text");
+        command.add(brandText);
+
+        // 封面标签：优先使用赛道名称
+        String tagText = "";
+        if (titleLib.getTrackId() != null && !titleLib.getTrackId().isEmpty()) {
+            Track track = trackMapper.findById(titleLib.getTrackId());
+            if (track != null && track.getName() != null && !track.getName().isEmpty()) {
+                tagText = track.getName();
+            }
+        }
+        if (!tagText.isEmpty()) {
+            command.add("--tag-text");
+            command.add(tagText);
+        }
 
         if (fontFamily != null && !fontFamily.isEmpty()) {
             command.add("--font-family");

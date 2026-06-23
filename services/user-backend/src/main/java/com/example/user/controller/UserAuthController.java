@@ -5,7 +5,6 @@ import com.example.user.entity.Result;
 import com.example.user.entity.User;
 import com.example.user.entity.UserTrack;
 import com.example.user.mapper.MembershipPlanMapper;
-import com.example.user.mapper.StyleMapper;
 import com.example.user.mapper.UserMapper;
 import com.example.user.mapper.UserTrackMapper;
 import com.example.user.service.UserService;
@@ -28,16 +27,14 @@ public class UserAuthController {
     private final MembershipPlanMapper membershipPlanMapper;
     private final UserService userService;
     private final UserTrackMapper userTrackMapper;
-    private final StyleMapper styleMapper;
     private final com.example.user.service.MailNotifyService mailNotifyService;
 
-    public UserAuthController(UserMapper userMapper, PasswordEncoder passwordEncoder, MembershipPlanMapper membershipPlanMapper, UserService userService, UserTrackMapper userTrackMapper, StyleMapper styleMapper, com.example.user.service.MailNotifyService mailNotifyService) {
+    public UserAuthController(UserMapper userMapper, PasswordEncoder passwordEncoder, MembershipPlanMapper membershipPlanMapper, UserService userService, UserTrackMapper userTrackMapper, com.example.user.service.MailNotifyService mailNotifyService) {
         this.userMapper = userMapper;
         this.passwordEncoder = passwordEncoder;
         this.membershipPlanMapper = membershipPlanMapper;
         this.userService = userService;
         this.userTrackMapper = userTrackMapper;
-        this.styleMapper = styleMapper;
         this.mailNotifyService = mailNotifyService;
     }
 
@@ -180,13 +177,7 @@ public class UserAuthController {
         user.setExpireDate(LocalDate.now().plusYears(1));
         user.setCanSetEmail(0);
         user.setEmailReceive(1);
-
-        List<com.example.user.entity.Style> styles = styleMapper.findAllEnabled();
-        if (styles != null && !styles.isEmpty()) {
-            user.setTemplate(styles.get(new java.util.Random().nextInt(styles.size())).getName());
-        } else {
-            user.setTemplate("基础风格");
-        }
+        user.setTemplate("公众号标准模板");
 
         if (membershipPlanId != null && !membershipPlanId.isEmpty()) {
             user.setMembershipPlanId(membershipPlanId);

@@ -6,7 +6,7 @@ import { listUsers, getUserTracks, addUserTrack, removeUserTrack, exportUsers, i
 import { createOrder } from '../api/order.js'
 import { listTracks } from '../api/track.js'
 import { listCreations } from '../api/creation.js'
-import { listStyles } from '../api/style.js'
+import { listExportTemplates } from '../api/exportTemplate.js'
 import { uploadFile } from '../api/upload.js'
 import { listMembershipPlans } from '../api/membershipPlan.js'
 import request from '../api/request.js'
@@ -41,7 +41,7 @@ function saveUserSearchState() {
 
 const data = ref([])
 const allTracks = ref([])
-const allStyles = ref([])
+const allTemplates = ref([])
 const allPlans = ref([])
 const allOperators = ref([])
 
@@ -289,10 +289,10 @@ const selectedRecommendTrack = computed(() => {
   return recommendUserTracks.value.find(t => t.id === selectedRecommendTrackId.value) || null
 })
 
-const userSelectedStyle = computed(() => {
+const userSelectedTemplate = computed(() => {
   const name = recommendUser.value?.template
   if (!name) return null
-  return allStyles.value.find(s => s.name === name) || null
+  return allTemplates.value.find(t => t.name === name) || null
 })
 
 const trackHasPost = computed(() => {
@@ -321,11 +321,11 @@ async function openRecommendModal(record) {
   recommendUserPosts.value = []
 
   try {
-    const [tracks, styles] = await Promise.all([
+    const [tracks, templates] = await Promise.all([
       getUserTracks(record.id),
-      listStyles(),
+      listExportTemplates(),
     ])
-    allStyles.value = styles || []
+    allTemplates.value = templates || []
     const trackIds = (tracks || []).map(t => t.trackId)
     recommendUserTracks.value = allTracks.value.filter(t => trackIds.includes(t.id))
     recommendUserPosts.value = []
@@ -479,11 +479,11 @@ async function loadData() {
     Promise.all([
       listTracks(),
       listMembershipPlans(),
-      listStyles().catch(() => []),
+      listExportTemplates().catch(() => []),
     ]).then(([tList, pList, styleList]) => {
       allTracks.value = tList || []
       allPlans.value = pList || []
-      allStyles.value = styleList || []
+      allTemplates.value = styleList || []
 
       const planMap = {}
       allPlans.value.forEach(p => { planMap[p.id] = p.name })
@@ -601,7 +601,7 @@ async function handleImport() {
 
 function downloadTemplate() {
   const headers = ['用户名', '手机号', '邮箱', '微信号', '可选赛道数', '可访问平台', '到期时间', '会员套餐', '默认样式', '状态', '备注']
-  const sample = ['示例用户', '13800138000', 'user@example.com', 'wxid_xxx', '3', '公众号,今日头条', '2026-12-31', '基础版', '基础风格', '正常', '']
+  const sample = ['示例用户', '13800138000', 'user@example.com', 'wxid_xxx', '3', '公众号,今日头条', '2026-12-31', '基础版', '公众号标准模板', '正常', '']
   const csvContent = [headers.join(','), sample.join(',')].join('\n')
   const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
@@ -650,7 +650,7 @@ function computeExpireDate(planId, fallback) {
 
 function handleAdd() {
   addModalOpen.value = true
-  addForm.value = { username: '', contactType: '手机号', contact: '', password: 'Abc123456', trackLimit: 0, platformLimit: ['公众号'], template: '基础风格', expireDate: '2026-12-31', remark: '', canSetEmail: 0, membershipPlanId: undefined, userType: 1, wxName: '', nickName: '' }
+  addForm.value = { username: '', contactType: '手机号', contact: '', password: 'Abc123456', trackLimit: 0, platformLimit: ['公众号'], template: '公众号标准模板', expireDate: '2026-12-31', remark: '', canSetEmail: 0, membershipPlanId: undefined, userType: 1, wxName: '', nickName: '' }
 }
 
 function handleEdit(record) {
@@ -680,7 +680,7 @@ async function saveAdd() {
       remark: addForm.value.remark,
       canSetEmail: addForm.value.canSetEmail ? 1 : 0,
       membershipPlanId: addForm.value.membershipPlanId || undefined,
-      template: addForm.value.template || '基础风格',
+      template: addForm.value.template || '公众号标准模板',
       userType: addForm.value.userType || 1,
       wxName: addForm.value.wxName || undefined,
       nickName: addForm.value.nickName || undefined,
@@ -1415,6 +1415,33 @@ onMounted(() => {
           <Select.Option v-for="opt in userTypeOptions" :key="opt.value" :value="opt.value" :label="opt.label">{{ opt.label }}</Select.Option>
         </Select>
       </Form.Item>
+      <Form.Item label="导出模板">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 8px;">
+          <div
+            v-for="t in allTemplates"
+            :key="t.id"
+            @click="addForm.template = t.name"
+            :style="{
+              border: addForm.template === t.name ? '2px solid ' + (t.configObj?.previewColor || '#1890ff') : '1px solid #e8e8e8',
+              borderRadius: '8px',
+              padding: '12px',
+              cursor: 'pointer',
+              background: addForm.template === t.name ? '#f6ffed' : '#fff',
+              transition: 'all 0.2s'
+            }"
+          >
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <div :style="{ width: '12px', height: '12px', borderRadius: '50%', background: t.configObj?.previewColor || '#999' }"></div>
+              <span style="font-weight: 600; font-size: 14px;">{{ t.name }}</span>
+            </div>
+            <div style="font-size: 12px; color: #888; line-height: 1.5;">{{ t.configObj?.description || '-' }}</div>
+            <div v-if="t.isDefault === 1" style="margin-top: 8px;">
+              <Tag size="small" color="green">默认</Tag>
+            </div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #999; margin-top: 8px;">点击卡片为用户选择导出 Word 时使用的模板样式</div>
+      </Form.Item>
       <Form.Item label="备注">
         <Input.TextArea v-model:value="addForm.remark" placeholder="可选填，如：客户来源、特殊说明等" :rows="3" />
       </Form.Item>
@@ -1474,11 +1501,32 @@ onMounted(() => {
       <Form.Item label="可访问平台" required>
         <Checkbox.Group :value="editForm.platformLimit" :options="platformOptions" @change="(val) => handlePlatformLimitChange(editForm, val)" />
       </Form.Item>
-      <Form.Item label="默认样式">
-        <Select show-search v-model:value="editForm.template" placeholder="请选择默认样式" allow-clear style="width: 240px;">
-          <Select.Option v-for="s in allStyles" :key="s.id" :value="s.name" :label="s.name">{{ s.name }}</Select.Option>
-        </Select>
-        <div style="font-size: 12px; color: #999; margin-top: 4px;">用户在创作文章时使用的默认排版风格</div>
+      <Form.Item label="导出模板">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 8px;">
+          <div
+            v-for="t in allTemplates"
+            :key="t.id"
+            @click="editForm.template = t.name"
+            :style="{
+              border: editForm.template === t.name ? '2px solid ' + (t.configObj?.previewColor || '#1890ff') : '1px solid #e8e8e8',
+              borderRadius: '8px',
+              padding: '12px',
+              cursor: 'pointer',
+              background: editForm.template === t.name ? '#f6ffed' : '#fff',
+              transition: 'all 0.2s'
+            }"
+          >
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <div :style="{ width: '12px', height: '12px', borderRadius: '50%', background: t.configObj?.previewColor || '#999' }"></div>
+              <span style="font-weight: 600; font-size: 14px;">{{ t.name }}</span>
+            </div>
+            <div style="font-size: 12px; color: #888; line-height: 1.5;">{{ t.configObj?.description || '-' }}</div>
+            <div v-if="t.isDefault === 1" style="margin-top: 8px;">
+              <Tag size="small" color="green">默认</Tag>
+            </div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #999; margin-top: 8px;">点击卡片为用户选择导出 Word 时使用的模板样式</div>
       </Form.Item>
       <Form.Item label="功能权限">
         <Checkbox v-model:checked="editForm.canSetEmail" :true-value="1" :false-value="0">允许设置邮箱接收文章</Checkbox>
@@ -1555,14 +1603,14 @@ onMounted(() => {
           <div style="background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px; padding: 12px 16px; margin-bottom: 20px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 13px; color: #52c41a; flex-shrink: 0;">用户默认样式：</span>
-              <template v-if="userSelectedStyle">
-                <span style="font-size: 14px; font-weight: 600; color: #262626;">{{ userSelectedStyle.name }}</span>
-                <Tag v-if="userSelectedStyle.scene" size="small" color="blue">{{ userSelectedStyle.scene.split(',')[0] }}</Tag>
+              <template v-if="userSelectedTemplate">
+                <span style="font-size: 14px; font-weight: 600; color: #262626;">{{ userSelectedTemplate.name }}</span>
+                <Tag v-if="userSelectedTemplate.configObj?.description" size="small" color="blue">{{ userSelectedTemplate.configObj.description.split(' / ')[0] }}</Tag>
               </template>
               <span v-else style="font-size: 14px; font-weight: 500; color: #8c8c8c;">{{ recommendUser.template || '未设置' }}</span>
             </div>
-            <div v-if="userSelectedStyle?.desc" style="font-size: 12px; color: #8c8c8c; margin-top: 4px; padding-left: 86px;">
-              {{ userSelectedStyle.desc }}
+            <div v-if="userSelectedTemplate?.configObj?.description" style="font-size: 12px; color: #8c8c8c; margin-top: 4px; padding-left: 86px;">
+              {{ userSelectedTemplate.configObj.description }}
             </div>
           </div>
 

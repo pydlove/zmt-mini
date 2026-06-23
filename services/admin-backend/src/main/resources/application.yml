@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 38080
   compression:
     enabled: true
     mime-types: application/json,application/xml,text/html,text/xml,text/plain,text/css,text/javascript,application/javascript
@@ -43,7 +43,7 @@ spring:
 local:
   task-processor:
     enabled: false
-    server-url: http://localhost:8080
+    server-url: http://localhost:38080
 
 # 流程自动化调度器开关（线上环境开启，本地环境关闭）
 process:

@@ -5,7 +5,8 @@ import com.example.blogger.exception.ArticleParseException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -14,6 +15,7 @@ import java.util.List;
 @Component
 public class ArticleJsonParser {
 
+    private static final Logger log = LoggerFactory.getLogger(ArticleJsonParser.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final java.util.regex.Pattern MARKER_PATTERN = java.util.regex.Pattern.compile("^(\\d+)\\s*([|/\\-·.])\\s*(.+)$");
 
@@ -22,15 +24,21 @@ public class ArticleJsonParser {
             throw new ArticleParseException("LLM 返回内容为空");
         }
 
-        ArrayNode array;
-        try {
-            JsonNode root = MAPPER.readTree(raw.trim());
-            if (!root.isArray()) {
-                throw new ArticleParseException("LLM 返回不是 JSON 数组");
+        String trimmed = raw.trim();
+        ArrayNode array = tryParseArray(trimmed);
+
+        // 解析失败时尝试尾部截断恢复，应对 LLM 输出被 max_tokens 截断的场景
+        if (array == null && !trimmed.endsWith("]")) {
+            String recovered = tryRecoverTruncatedJson(trimmed);
+            if (recovered != null) {
+                log.warn("[ArticleJsonParser] LLM 输出疑似被截断，截取到最后一个完整对象: 原始长度={}, 恢复后长度={}",
+                        trimmed.length(), recovered.length());
+                array = tryParseArray(recovered);
             }
-            array = (ArrayNode) root;
-        } catch (Exception e) {
-            throw new ArticleParseException("LLM 返回不是合法 JSON: " + e.getMessage(), e);
+        }
+
+        if (array == null) {
+            throw new ArticleParseException("LLM 返回不是合法 JSON: " + summarize(trimmed));
         }
 
         if (array.size() == 0) {
@@ -42,6 +50,86 @@ public class ArticleJsonParser {
             blocks.add(parseBlock(array.get(i), i));
         }
         return blocks;
+    }
+
+    /**
+     * 尝试将字符串解析为 JSON 数组。失败返回 null，不抛异常。
+     */
+    private ArrayNode tryParseArray(String s) {
+        try {
+            JsonNode root = MAPPER.readTree(s);
+            if (root.isArray()) {
+                return (ArrayNode) root;
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 从被截断的 JSON 中恢复：找到最后一个完整顶层对象的结尾，截断后补上 ']' 关闭数组。
+     * <p>
+     * 用于应对 LLM 在 max_tokens 限制下输出被截断的场景（如 content 字段值在中间被切掉）。
+     *
+     * @param s LLM 原始输出
+     * @return 截断后能解析的 JSON 字符串；找不到完整对象则返回 null
+     */
+    private String tryRecoverTruncatedJson(String s) {
+        boolean inString = false;
+        boolean escaped = false;
+        int braceDepth = 0;       // 嵌套对象深度
+        int bracketDepth = 0;     // 数组深度（顶层 [ = 1）
+        int lastValidObjectEnd = -1;
+
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (inString && c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) continue;
+
+            if (c == '[') {
+                bracketDepth++;
+            } else if (c == ']') {
+                bracketDepth--;
+            } else if (c == '{') {
+                braceDepth++;
+            } else if (c == '}') {
+                braceDepth--;
+                // braceDepth 回到 0 且仍在顶层数组内时，记录该位置为完整对象结尾
+                if (braceDepth == 0 && bracketDepth >= 1) {
+                    lastValidObjectEnd = i;
+                }
+            }
+        }
+
+        if (lastValidObjectEnd < 0) {
+            return null;
+        }
+
+        String truncated = s.substring(0, lastValidObjectEnd + 1);
+        if (!truncated.endsWith("]")) {
+            truncated += "]";
+        }
+        return truncated;
+    }
+
+    /**
+     * 截取前 200 字符用于错误信息展示
+     */
+    private String summarize(String raw) {
+        if (raw == null) return "null";
+        return raw.length() > 200 ? raw.substring(0, 200) + "..." : raw;
     }
 
     private ArticleBlock parseBlock(JsonNode node, int index) {

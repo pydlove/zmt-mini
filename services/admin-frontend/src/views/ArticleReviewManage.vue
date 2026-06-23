@@ -29,8 +29,19 @@ const imagePostLoading = ref(false)
 const imagePostUrls = ref([])
 const imagePostModalOpen = ref(false)
 const currentImagePostTitleId = ref('')
+const currentImagePostRecord = ref(null)
+const imagePostStyle = ref('xiaohongshu')
 const imagePreviewOpen = ref(false)
 const previewImageUrl = ref('')
+
+const CARD_STYLES = [
+  { key: 'xiaohongshu', label: '小红书', accent: '#ff2442' },
+  { key: 'wechat', label: '公众号', accent: '#07c160' },
+  { key: 'douyin', label: '抖音', accent: '#25f4ee' },
+  { key: 'literary', label: '文艺', accent: '#8b5e34' },
+  { key: 'minimal', label: '极简', accent: '#1a1a1a' },
+  { key: 'business', label: '商务', accent: '#1677ff' },
+]
 
 const selectedRowKeys = ref([])
 const selectedRows = ref([])
@@ -127,10 +138,37 @@ async function handlePreviewAction(action) {
       aiHeavy: 'AI味已标记重',
     }
     message.success(actionMap[action] || '操作成功')
-    if (action === 'confirm' || action === 'reject') {
-      previewModalOpen.value = false
-    }
     loadPending()
+  } catch (e) {
+    message.error('操作失败')
+  }
+}
+
+function handlePreviewNext() {
+  if (!previewRecord.value || !pendingData.value.length) return
+  const currentIndex = pendingData.value.findIndex(item => item.id === previewRecord.value.id)
+  const nextIndex = currentIndex + 1
+  if (nextIndex >= pendingData.value.length) {
+    message.info('已经是最后一篇了')
+    return
+  }
+  handlePreview(pendingData.value[nextIndex])
+}
+
+async function handleConfirmAndNext() {
+  if (!previewRecord.value) return
+  const currentIndex = pendingData.value.findIndex(item => item.id === previewRecord.value.id)
+  const nextRecord = pendingData.value[currentIndex + 1]
+  try {
+    await reviewTitle(previewRecord.value.id, 'confirm')
+    message.success('已确认')
+    loadPending()
+    if (!nextRecord) {
+      previewModalOpen.value = false
+      message.info('已经是最后一篇了')
+      return
+    }
+    handlePreview(nextRecord)
   } catch (e) {
     message.error('操作失败')
   }
@@ -297,18 +335,20 @@ function handleGoToMatchByDate() {
   router.push({ path: '/title-match', query: { recommendDate: selectedDate.value.format('YYYY-MM-DD') } })
 }
 
-async function handleGenerateImagePost(record) {
+async function handleGenerateImagePost(record, style = imagePostStyle.value) {
   if (!record || !record.id) return
   Modal.confirm({
     title: '生成贴图',
-    content: '确认生成该文章的贴图？生成后可在邮件推送时一并发送。',
+    content: `确认使用「${CARD_STYLES.find(s => s.key === style)?.label || style}」风格生成该文章的贴图？`,
     async onOk() {
       imagePostLoading.value = true
       try {
-        const images = await generateImagePost(record.id)
+        const images = await generateImagePost(record.id, style)
         message.success(`贴图生成成功，共 ${images.length} 张`)
         imagePostUrls.value = images || []
         currentImagePostTitleId.value = record.id
+        currentImagePostRecord.value = record
+        imagePostStyle.value = style
         imagePostModalOpen.value = true
       } catch (e) {
         message.error('贴图生成失败: ' + (e?.response?.data?.msg || e?.message || '未知错误'))
@@ -324,13 +364,14 @@ async function handleBatchGenerateImagePost() {
     message.warning('请先选择要生成贴图的文章')
     return
   }
+  const styleLabel = CARD_STYLES.find(s => s.key === imagePostStyle.value)?.label || imagePostStyle.value
   Modal.confirm({
     title: '批量生成贴图',
-    content: `确认对选中的 ${selectedRowKeys.value.length} 篇文章批量生成贴图？`,
+    content: `确认使用「${styleLabel}」风格对选中的 ${selectedRowKeys.value.length} 篇文章批量生成贴图？`,
     async onOk() {
       batchImagePostLoading.value = true
       try {
-        const res = await batchGenerateImagePost(selectedRowKeys.value)
+        const res = await batchGenerateImagePost(selectedRowKeys.value, imagePostStyle.value)
         message.success(`批量生成完成：成功 ${res.success} 条，失败 ${res.failed} 条`)
         if (res.errors && res.errors.length > 0) {
           console.warn('批量生成贴图失败明细:', res.errors)
@@ -347,6 +388,7 @@ async function handleBatchGenerateImagePost() {
 async function openImagePostModal(record) {
   if (!record || !record.id) return
   currentImagePostTitleId.value = record.id
+  currentImagePostRecord.value = record
   imagePostUrls.value = []
   imagePostModalOpen.value = true
   imagePostLoading.value = true
@@ -358,6 +400,28 @@ async function openImagePostModal(record) {
   } finally {
     imagePostLoading.value = false
   }
+}
+
+async function handleChangeImagePostStyle(style) {
+  imagePostStyle.value = style
+  if (!currentImagePostRecord.value) return
+  // 直接重新生成当前文章的贴图
+  imagePostLoading.value = true
+  try {
+    const images = await generateImagePost(currentImagePostRecord.value.id, style)
+    imagePostUrls.value = images || []
+    message.success(`已切换为「${CARD_STYLES.find(s => s.key === style)?.label || style}」风格`)
+  } catch (e) {
+    message.error('切换风格失败: ' + (e?.response?.data?.msg || e?.message || '未知错误'))
+  } finally {
+    imagePostLoading.value = false
+  }
+}
+
+function handleDownloadAllImages() {
+  imagePostUrls.value.forEach((url, idx) => {
+    setTimeout(() => handleDownloadImage(url), idx * 400)
+  })
 }
 
 function handleDownloadImage(url) {
@@ -533,12 +597,6 @@ onMounted(() => {
         </Button>
         <Button size="small" :loading="imagePostLoading" @click="handleGenerateImagePost(previewRecord)">生成贴图</Button>
         <Button size="small" @click="openImagePostModal(previewRecord)">查看贴图</Button>
-        <div v-if="activeTab === 'pending'" style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
-          <Button type="primary" size="small" @click="() => handlePreviewAction('confirm')">确认</Button>
-          <Button danger size="small" @click="() => handlePreviewAction('reject')">打回</Button>
-          <Button size="small" @click="() => handlePreviewAction('aiPass')">AI味通过</Button>
-          <Button size="small" @click="() => handlePreviewAction('aiHeavy')">AI味重</Button>
-        </div>
       </div>
       <div v-if="previewLoading" style="padding: 24px; text-align: center; color: #999;">正在加载预览...</div>
       <div ref="docxContainerRef" style="padding: 16px; margin: 0 auto; max-width: 640px;"></div>
@@ -569,24 +627,66 @@ onMounted(() => {
         <span>其他:{{ highlightStats.其他 || 0 }}个</span>
       </div>
     </div>
+
+    <!-- 底部操作栏 -->
+    <div v-if="!previewLoading && previewRecord" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid #f0f0f0; flex-wrap: wrap;">
+      <Button size="small" @click="handlePreviewNext">预览下一篇</Button>
+      <template v-if="activeTab === 'pending'">
+        <Button type="primary" size="small" @click="handleConfirmAndNext">确认并预览下一篇</Button>
+        <Button type="primary" size="small" @click="() => handlePreviewAction('confirm')">确认</Button>
+        <Button danger size="small" @click="() => handlePreviewAction('reject')">打回</Button>
+        <Button size="small" @click="() => handlePreviewAction('aiPass')">AI味通过</Button>
+        <Button size="small" @click="() => handlePreviewAction('aiHeavy')">AI味重</Button>
+      </template>
+    </div>
   </Modal>
 
   <!-- 贴图预览弹窗 -->
-  <Modal v-model:open="imagePostModalOpen" title="贴图预览" :footer="null" :mask-closable="true" width="900">
+  <Modal v-model:open="imagePostModalOpen" title="贴图预览" :footer="null" :mask-closable="true" width="1000">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <Button
+          v-for="s in CARD_STYLES"
+          :key="s.key"
+          size="small"
+          :style="{
+            borderRadius: '20px',
+            borderColor: imagePostStyle === s.key ? s.accent : '#d9d9d9',
+            background: imagePostStyle === s.key ? s.accent : '#fff',
+            color: imagePostStyle === s.key ? '#fff' : '#595959',
+            fontWeight: imagePostStyle === s.key ? 600 : 400,
+          }"
+          @click="handleChangeImagePostStyle(s.key)"
+        >
+          {{ s.label }}
+        </Button>
+      </div>
+      <Button type="primary" size="small" :disabled="imagePostUrls.length === 0" @click="handleDownloadAllImages">
+        全部下载
+      </Button>
+    </div>
     <div v-if="imagePostLoading" style="padding: 24px; text-align: center;">
       <Spin />
-      <div style="margin-top: 8px; color: #999;">正在加载贴图...</div>
+      <div style="margin-top: 8px; color: #999;">正在生成贴图...</div>
     </div>
     <div v-else-if="imagePostUrls.length === 0" style="padding: 24px; text-align: center; color: #999;">
       暂无贴图，点击"生成贴图"按钮创建
     </div>
-    <div v-else style="display: flex; flex-direction: row; gap: 16px; padding: 8px; overflow-x: auto;">
-      <div v-for="(url, idx) in imagePostUrls" :key="idx" style="border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; flex-shrink: 0; width: 300px;">
-        <img :src="url" style="width: 100%; height: 500px; object-fit: cover; display: block; cursor: zoom-in;" @click="handlePreviewImage(url)" />
-        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #fafafa;">
-          <span style="font-size: 12px; color: #999;">第 {{ idx + 1 }} 张</span>
-          <Button size="small" @click="handleDownloadImage(url)">下载</Button>
+    <div v-else style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; padding: 8px; max-height: 70vh; overflow-y: auto;">
+      <div
+        v-for="(url, idx) in imagePostUrls"
+        :key="idx"
+        style="text-align: center; cursor: pointer;"
+        @click="handlePreviewImage(url)"
+      >
+        <img
+          :src="url"
+          style="width: 100%; height: auto; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); display: block;"
+        />
+        <div style="margin-top: 10px; font-size: 13px; color: #595959;">
+          图 {{ idx + 1 }} / {{ imagePostUrls.length }}
         </div>
+        <Button size="small" style="margin-top: 6px;" @click.stop="handleDownloadImage(url)">下载</Button>
       </div>
     </div>
   </Modal>

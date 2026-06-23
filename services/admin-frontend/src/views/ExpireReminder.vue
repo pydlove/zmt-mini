@@ -1,8 +1,12 @@
 <script setup>
 import { ref, onMounted, computed, h } from 'vue'
-import { Card, Table, Button, Select, message, Tag, Modal } from 'ant-design-vue'
+import { useRouter } from 'vue-router'
+import { Card, Table, Button, Select, message, Tag, Modal, Popconfirm } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { getExpiringUsers, sendExpireReminderEmails } from '../api/user.js'
+import request from '../api/request.js'
+
+const router = useRouter()
 
 const data = ref([])
 const loading = ref(false)
@@ -33,8 +37,8 @@ function onSearch() {
 
 function getDaysLeft(expireDate) {
   if (!expireDate) return 0
-  const expire = dayjs(expireDate)
-  const now = dayjs()
+  const expire = dayjs(expireDate).startOf('day')
+  const now = dayjs().startOf('day')
   return expire.diff(now, 'day')
 }
 
@@ -46,7 +50,7 @@ function getUrgencyColor(expireDate) {
 }
 
 const columns = [
-  { title: '用户名', dataIndex: 'username', width: 160 },
+  { title: '用户名', dataIndex: 'username', width: 160, customRender: ({ text }) => h('a', { style: 'color: #1677ff; cursor: pointer;', onClick: () => text && router.push({ path: '/users', query: { keyword: text } }) }, text || '—') },
   { title: '邮箱', dataIndex: 'email', ellipsis: true },
   { title: '手机号', dataIndex: 'phone', width: 130 },
   {
@@ -70,6 +74,56 @@ const columns = [
       const daysLeft = getDaysLeft(record.expireDate)
       const color = getUrgencyColor(record.expireDate)
       return h('span', { style: { color, fontWeight: 600 } }, daysLeft + '天')
+    },
+  },
+  {
+    title: '操作',
+    key: 'action',
+    width: 180,
+    align: 'center',
+    customRender: ({ record }) => {
+      if (record.status === 0) {
+        return h(Tag, { color: 'red', size: 'small' }, () => '已禁用')
+      }
+      return h('div', { style: 'display: flex; gap: 6px; justify-content: center;' }, [
+        h(
+          Popconfirm,
+          {
+            title: '确认给该用户续期一个月？',
+            okText: '确认续期',
+            cancelText: '取消',
+            onConfirm: () => handleRenewMonth(record),
+          },
+          {
+            default: () =>
+              h(Button, { type: 'primary', size: 'small' }, () => '续期一个月'),
+            description: () => {
+              const base = record.expireDate ? dayjs(record.expireDate) : dayjs()
+              const newDate = base.add(1, 'month').format('YYYY-MM-DD')
+              return h('div', { style: 'line-height: 1.7;' }, [
+                h('div', `用户：${record.username || record.email || '未知'}`),
+                h('div', `当前到期：${record.expireDate || '未设置'}`),
+                h('div', { style: 'color: #16a34a; font-weight: 600;' }, `续期后：${newDate}`),
+              ])
+            },
+          }
+        ),
+        h(
+          Popconfirm,
+          {
+            title: '确认禁用该用户？',
+            description: `用户：${record.username || record.email || '未知'}`,
+            okText: '确认禁用',
+            okButtonProps: { danger: true, size: 'small' },
+            cancelText: '取消',
+            onConfirm: () => handleDisable(record),
+          },
+          {
+            default: () =>
+              h(Button, { danger: true, size: 'small' }, () => '禁用'),
+          }
+        ),
+      ])
     },
   },
 ]
@@ -98,6 +152,28 @@ async function handleConfirmSend() {
   }
 }
 
+async function handleDisable(record) {
+  try {
+    await request.put('/users/' + record.id, { status: 0 })
+    message.success('已禁用')
+    loadData()
+  } catch (e) {
+    message.error(e.message || '禁用失败')
+  }
+}
+
+async function handleRenewMonth(record) {
+  try {
+    const base = record.expireDate ? dayjs(record.expireDate) : dayjs()
+    const newExpireDate = base.add(1, 'month').format('YYYY-MM-DD')
+    await request.put('/users/' + record.id, { expireDate: newExpireDate })
+    message.success(`续期成功，到期日更新为 ${newExpireDate}`)
+    loadData()
+  } catch (e) {
+    message.error(e.message || '续期失败')
+  }
+}
+
 onMounted(() => {
   loadData()
 })
@@ -107,7 +183,7 @@ onMounted(() => {
   <Card title="到期提醒" :bordered="false">
     <!-- 筛选区 -->
     <div style="display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap;">
-      <span style="font-size: 14px; color: #595959;">查看未来</span>
+      <span style="font-size: 14px; color: #595959;">查看已过期及未来</span>
       <Select show-search v-model:value="days" style="width: 100px;" @change="onSearch">
         <Select.Option :value="3">3天内</Select.Option>
         <Select.Option :value="7">7天内</Select.Option>
