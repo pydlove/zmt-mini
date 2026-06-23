@@ -1,6 +1,7 @@
 package com.example.blogger.util;
 
 import com.example.blogger.entity.AiFlavorRule;
+import com.example.blogger.entity.ArticleBlock;
 import com.example.blogger.mapper.AiFlavorRuleMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -47,6 +49,44 @@ public class AiFlavorRemover {
             log.info("[AiFlavorRemover] 过滤思考标签后长度: {}", cleaned.length());
         }
         return cleaned;
+    }
+
+    /**
+     * 对 ArticleBlock 列表逐个去 AI 味。
+     * title 和 content 都会处理；如果处理失败则保留原始内容并记录日志。
+     */
+    public List<ArticleBlock> removeAiFlavor(List<ArticleBlock> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return blocks;
+        }
+        List<ArticleBlock> result = new ArrayList<>();
+        for (ArticleBlock block : blocks) {
+            ArticleBlock copy = copyBlock(block);
+            try {
+                if (copy.getTitle() != null && !copy.getTitle().isEmpty()) {
+                    copy.setTitle(removeAiFlavor(copy.getTitle()));
+                }
+                if (copy.getContent() != null && !copy.getContent().isEmpty()) {
+                    copy.setContent(removeAiFlavor(copy.getContent()));
+                }
+            } catch (Exception e) {
+                log.warn("[AiFlavorRemover] 处理 block 失败，保留原始内容: {}", e.getMessage());
+            }
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private ArticleBlock copyBlock(ArticleBlock block) {
+        ArticleBlock copy = new ArticleBlock();
+        copy.setType(block.getType());
+        copy.setTitle(block.getTitle());
+        copy.setMarker(block.getMarker());
+        copy.setMarkerText(block.getMarkerText());
+        copy.setContent(block.getContent());
+        copy.setStyleHint(block.getStyleHint());
+        copy.setRenderMeta(block.getRenderMeta() != null ? new java.util.HashMap<>(block.getRenderMeta()) : null);
+        return copy;
     }
 
     private String runPythonScript(String content) {
