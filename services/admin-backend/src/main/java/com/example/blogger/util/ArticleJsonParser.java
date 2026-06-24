@@ -27,6 +27,16 @@ public class ArticleJsonParser {
         String trimmed = raw.trim();
         ArrayNode array = tryParseArray(trimmed);
 
+        // 解析失败时尝试从文本中提取 JSON 数组，应对 LLM 输出前置自然语言（如"让我分析规则..."）的场景
+        if (array == null) {
+            String extracted = extractJsonArray(trimmed);
+            if (extracted != null) {
+                log.warn("[ArticleJsonParser] LLM 输出包含非 JSON 前置文字，提取 JSON 部分: 原始长度={}, 提取后长度={}",
+                        trimmed.length(), extracted.length());
+                array = tryParseArray(extracted);
+            }
+        }
+
         // 解析失败时尝试尾部截断恢复，应对 LLM 输出被 max_tokens 截断的场景
         if (array == null && !trimmed.endsWith("]")) {
             String recovered = tryRecoverTruncatedJson(trimmed);
@@ -122,6 +132,31 @@ public class ArticleJsonParser {
             truncated += "]";
         }
         return truncated;
+    }
+
+    /**
+     * 从包含非 JSON 前置文字的文本中提取 JSON 数组。
+     * 找到第一个 '[' 和最后一个匹配的 ']'，截取中间部分。
+     *
+     * @param s LLM 原始输出（可能包含前置自然语言）
+     * @return 提取出的 JSON 数组字符串；找不到则返回 null
+     */
+    private String extractJsonArray(String s) {
+        int start = s.indexOf('[');
+        if (start < 0) {
+            return null;
+        }
+        // 从末尾找最后一个 ']'，取 start 到 end 之间的内容
+        int end = s.lastIndexOf(']');
+        if (end < start) {
+            return null;
+        }
+        String candidate = s.substring(start, end + 1);
+        // 简单校验：长度不能太短（至少要有 [{}]）
+        if (candidate.length() < 4) {
+            return null;
+        }
+        return candidate;
     }
 
     /**
